@@ -74,8 +74,12 @@ func main() {
 
 ## 🛠️ API Reference
 
-### Event Listeners
-- `bot.OnReady(func(session *highrisebot.SessionMetadata))`
+### Lifecycle & Event Listeners
+- `bot.BeforeStart(func(roomID string))` - Triggered before initial socket connection (ideal for loading DB / configs).
+- `bot.OnReady(func(session *highrisebot.SessionMetadata))` - Triggered when bot logs in to the room.
+- `bot.OnDisconnect(func(err error))` - Triggered if socket connection drops (before auto-reconnect backoff).
+- `bot.GetBotID() string` - Helper to inspect current bot user ID.
+- `bot.IsConnected() bool` - Check if bot is connected and session active.
 - `bot.OnChat(func(user *highrisebot.User, message string))`
 - `bot.OnWhisper(func(user *highrisebot.User, message string))`
 - `bot.OnUserJoin(func(user *highrisebot.User, pos highrisebot.Position))`

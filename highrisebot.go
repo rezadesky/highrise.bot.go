@@ -16,10 +16,15 @@ type Bot struct {
 	Gateway *gateway.Client
 	WebAPI  *webapi.Client
 
+	// Session data populated once connected
+	Session *models.SessionMetadata
+
 	// Direct event callback registrations
-	onReady     func(*models.SessionMetadata)
-	onChat      func(*models.User, string)
-	onWhisper   func(*models.User, string)
+	beforeStart  func(roomID string)
+	onReady      func(*models.SessionMetadata)
+	onDisconnect func(error)
+	onChat       func(*models.User, string)
+	onWhisper    func(*models.User, string)
 	onUserJoin  func(*models.User, models.Position)
 	onUserLeave func(*models.User)
 	onUserMove  func(*models.User, models.Position)
@@ -67,10 +72,17 @@ func (b *Bot) Start(ctx ...context.Context) error {
 
 	// Wire user handlers to gateway handlers
 	b.Gateway.Handlers = gateway.HandlerFuncs{
-		OnReady:     b.onReady,
-		OnChat:      b.onChat,
-		OnWhisper:   b.onWhisper,
-		OnUserJoin:  b.onUserJoin,
+		BeforeStart: b.beforeStart,
+		OnReady: func(session *models.SessionMetadata) {
+			b.Session = session
+			if b.onReady != nil {
+				b.onReady(session)
+			}
+		},
+		OnDisconnect: b.onDisconnect,
+		OnChat:       b.onChat,
+		OnWhisper:    b.onWhisper,
+		OnUserJoin:   b.onUserJoin,
 		OnUserLeave: b.onUserLeave,
 		OnUserMove:  b.onUserMove,
 		OnEmote:     b.onEmote,
@@ -90,8 +102,16 @@ func (b *Bot) Stop() {
 
 // Event Listeners
 
+func (b *Bot) BeforeStart(fn func(roomID string)) {
+	b.beforeStart = fn
+}
+
 func (b *Bot) OnReady(fn func(*models.SessionMetadata)) {
 	b.onReady = fn
+}
+
+func (b *Bot) OnDisconnect(fn func(err error)) {
+	b.onDisconnect = fn
 }
 
 func (b *Bot) OnChat(fn func(*models.User, string)) {
@@ -132,6 +152,19 @@ func (b *Bot) OnMessage(fn func(userID, conversationID string, isNew bool)) {
 
 func (b *Bot) OnError(fn func(error)) {
 	b.onError = fn
+}
+
+// GetBotID returns the connected bot's user ID if online.
+func (b *Bot) GetBotID() string {
+	if b.Session != nil {
+		return b.Session.UserID
+	}
+	return ""
+}
+
+// IsConnected returns whether the bot session is actively running.
+func (b *Bot) IsConnected() bool {
+	return b.Session != nil
 }
 
 // Outgoing Bot Actions

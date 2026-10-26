@@ -24,7 +24,9 @@ const (
 
 // HandlerFuncs holds all dispatch callbacks.
 type HandlerFuncs struct {
+	BeforeStart func(roomID string)
 	OnReady     func(*models.SessionMetadata)
+	OnDisconnect func(err error)
 	OnChat      func(*models.User, string)
 	OnWhisper   func(*models.User, string)
 	OnUserJoin  func(*models.User, models.Position)
@@ -107,6 +109,10 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.running = true
 	backoff := 1 * time.Second
 
+	if c.Handlers.BeforeStart != nil {
+		c.Handlers.BeforeStart(c.RoomID)
+	}
+
 	for c.running {
 		select {
 		case <-ctx.Done():
@@ -117,8 +123,13 @@ func (c *Client) Connect(ctx context.Context) error {
 		}
 
 		err := c.runSession(ctx)
-		if err != nil && c.Handlers.OnError != nil {
-			c.Handlers.OnError(fmt.Errorf("gateway error: %w", err))
+		if err != nil {
+			if c.Handlers.OnDisconnect != nil {
+				c.Handlers.OnDisconnect(err)
+			}
+			if c.Handlers.OnError != nil {
+				c.Handlers.OnError(fmt.Errorf("gateway error: %w", err))
+			}
 		}
 
 		if !c.running {
