@@ -1,0 +1,8 @@
+- [Home](/)
+- [Installation & Quickstart](quickstart.md)
+- [Configuration](configuration.md)
+- [Event System](events.md)
+- [Actions & Commands](actions.md)
+- [Multibot Guide](multibot.md)
+- [Deployment & Tuning](deployment.md)
+- [Troubleshooting & FAQ](faq.md)
