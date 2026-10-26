@@ -49,6 +49,10 @@ type Client struct {
 	stopChan  chan struct{}
 	closeOnce sync.Once
 	running   bool
+
+	// Request tracking for RPC responses (rid -> response channel)
+	pendingMu sync.Mutex
+	pending   map[string]chan []byte
 }
 
 // NewClient initializes a new Gateway Client instance.
@@ -62,6 +66,38 @@ func NewClient(token, roomID, gatewayURL string) *Client {
 		RoomID:     roomID,
 		writeChan:  make(chan []byte, 128),
 		stopChan:   make(chan struct{}),
+		pending:    make(map[string]chan []byte),
+	}
+}
+
+// Request sends an RPC request and waits for the response matching rid with timeout.
+func (c *Client) Request(ctx context.Context, payload map[string]any) ([]byte, error) {
+	rid := fmt.Sprintf("req_%d", time.Now().UnixNano())
+	payload["rid"] = rid
+
+	respChan := make(chan []byte, 1)
+
+	c.pendingMu.Lock()
+	c.pending[rid] = respChan
+	c.pendingMu.Unlock()
+
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pending, rid)
+		c.pendingMu.Unlock()
+	}()
+
+	if err := c.Send(payload); err != nil {
+		return nil, err
+	}
+
+	select {
+	case res := <-respChan:
+		return res, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(15 * time.Second):
+		return nil, errors.New("request timeout waiting for response")
 	}
 }
 
@@ -225,6 +261,7 @@ func (c *Client) writePump(conn *websocket.Conn, errChan chan<- error) {
 // InboundEnvelope captures generic highrise event types.
 type InboundEnvelope struct {
 	Type   string          `json:"_type"`
+	RID    string          `json:"rid,omitempty"`
 	Event  string          `json:"event,omitempty"`
 	Data   json.RawMessage `json:"data,omitempty"`
 	RawMap map[string]any  `json:"-"`
@@ -234,6 +271,17 @@ func (c *Client) handleMessage(msg []byte) {
 	var env InboundEnvelope
 	if err := json.Unmarshal(msg, &env); err != nil {
 		return
+	}
+
+	// Dispatch to pending request waiter if matching rid exists
+	if env.RID != "" {
+		c.pendingMu.Lock()
+		ch, exists := c.pending[env.RID]
+		c.pendingMu.Unlock()
+		if exists {
+			ch <- msg
+			return
+		}
 	}
 
 	// Highrise event dispatching

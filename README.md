@@ -86,7 +86,7 @@ func main() {
 - `bot.OnTip(func(sender *highrisebot.User, receiver *highrisebot.User, item highrisebot.Item))`
 - `bot.OnError(func(err error))`
 
-### Room Actions
+### Room Actions & Queries
 - `bot.Chat(message string)`
 - `bot.Whisper(userID, message string)`
 - `bot.Walk(x, y, z float64, facing ...string)`
@@ -96,6 +96,10 @@ func main() {
 - `bot.Kick(userID string)`
 - `bot.Mute(userID string, durationSeconds int)`
 - `bot.Ban(userID string, durationSeconds int)`
+- `bot.GetRoomUsers(ctx ...context.Context) ([]highrisebot.UserPosition, error)`
+- `bot.GetWallet(ctx ...context.Context) ([]highrisebot.Currency, error)`
+- `bot.GetInventory(ctx ...context.Context) ([]highrisebot.Item, error)`
+- `bot.SetOutfit(outfitItems []highrisebot.Item) error`
 
 ### Web API Client (Public REST Data)
 ```go

@@ -241,11 +241,108 @@ func (b *Bot) Ban(userID string, durationSeconds int) error {
 	return b.Gateway.Send(payload)
 }
 
+// GetRoomUsers fetches all users currently in the room along with their positions.
+func (b *Bot) GetRoomUsers(ctx ...context.Context) ([]models.UserPosition, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type": "GetRoomUsersRequest",
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Content [][]json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+
+	results := make([]models.UserPosition, 0, len(resp.Content))
+	for _, pair := range resp.Content {
+		if len(pair) >= 2 {
+			var u models.User
+			var p models.Position
+			_ = json.Unmarshal(pair[0], &u)
+			_ = json.Unmarshal(pair[1], &p)
+			results = append(results, models.UserPosition{User: u, Position: p})
+		}
+	}
+	return results, nil
+}
+
+// GetWallet retrieves the current currency balances of the bot (gold, tokens).
+func (b *Bot) GetWallet(ctx ...context.Context) ([]models.Currency, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type": "GetWalletRequest",
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Content []models.Currency `json:"content"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Content, nil
+}
+
+// GetInventory retrieves the bot's avatar clothing inventory.
+func (b *Bot) GetInventory(ctx ...context.Context) ([]models.Item, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type": "GetInventoryRequest",
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Items []models.Item `json:"items"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
+// SetOutfit updates the bot's avatar outfit with a list of item IDs.
+func (b *Bot) SetOutfit(outfitItems []models.Item) error {
+	payload := map[string]any{
+		"_type":  "SetOutfitRequest",
+		"outfit": outfitItems,
+	}
+	return b.Gateway.Send(payload)
+}
+
 // Export models directly as alias for convenience
 type (
 	User            = models.User
 	Position        = models.Position
+	UserPosition    = models.UserPosition
 	RoomInfo        = models.RoomInfo
 	SessionMetadata = models.SessionMetadata
 	Item            = models.Item
+	Currency        = models.Currency
 )

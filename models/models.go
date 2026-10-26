@@ -45,12 +45,20 @@ type RateLimits struct {
 
 // Item represents a Highrise virtual item/clothing/furniture.
 type Item struct {
-	ID          string `json:"item_id"`
-	Type        string `json:"type,omitempty"`
-	Amount      int    `json:"amount,omitempty"`
-	Category    string `json:"category,omitempty"`
-	ItemName    string `json:"item_name,omitempty"`
-	Rarity      string `json:"rarity,omitempty"`
+	ID            string `json:"id"`
+	Type          string `json:"type,omitempty"`
+	Amount        int    `json:"amount,omitempty"`
+	AccountBound  bool   `json:"account_bound,omitempty"`
+	ActivePalette *int   `json:"active_palette,omitempty"`
+	Category      string `json:"category,omitempty"`
+	ItemName      string `json:"item_name,omitempty"`
+	Rarity        string `json:"rarity,omitempty"`
+}
+
+// UserPosition pairs a User with their current Position in a room.
+type UserPosition struct {
+	User     User     `json:"user"`
+	Position Position `json:"position"`
 }
 
 // Currency represents in-game wallet currencies (Gold, Bubbles).
