@@ -2,12 +2,9 @@ package events
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
-
-	"github.com/rezadesky/highrisebot/models"
 )
 
 // EventType defines strings for Highrise events.

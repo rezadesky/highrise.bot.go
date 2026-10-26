@@ -2,8 +2,8 @@ package highrisebot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"sync"
