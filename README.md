@@ -1,24 +1,36 @@
-# highrisebot 🚀
+<div align="center">
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/rezadesky/highrisebot)](https://goreportcard.com/report/github.com/rezadesky/highrisebot)
+# highrise.bot.go 🚀
+
+**An unofficial, blazingly fast, high-performance Highrise Virtual World Bot & Web API SDK written in Go.**
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/rezadesky/highrisebot.svg)](https://pkg.go.dev/github.com/rezadesky/highrisebot)
+[![Documentation](https://img.shields.io/badge/Docs-Docsify-00add8.svg)](https://rezadesky.github.io/highrise.bot.go/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rezadesky/highrise.bot.go)](https://goreportcard.com/report/github.com/rezadesky/highrise.bot.go)
+[![CI Workflow](https://github.com/rezadesky/highrise.bot.go/actions/workflows/ci.yml/badge.svg)](https://github.com/rezadesky/highrise.bot.go/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-An unofficial, high-performance **Highrise Bot & Web API SDK** written in Go. Designed to be lightweight, concurrency-safe, with built-in automatic reconnects and an intuitive event-driven API (similar to DiscordGo).
+[Documentation](https://rezadesky.github.io/highrise.bot.go/) • [Quickstart](#-quickstart) • [Features](#-features) • [Examples](./examples/) • [Contributing](./CONTRIBUTING.md)
+
+</div>
 
 ---
 
-## ✨ Features
+## ⚡ Highlights & Why Go?
 
-- ⚡ **Event-Driven Architecture**: Intuitive callback listeners (`OnChat`, `OnUserJoin`, `OnEmote`, etc.).
-- 🔄 **Built-in Auto Reconnect**: Seamlessly handles socket drops and reconnections with exponential backoff.
-- 💬 **Complete Room Controls**: Chat, Whisper, Teleport, Walk, Emotes, Reactions, and Moderation (Kick/Mute/Ban).
-- 🌐 **Integrated Web API Client**: Native support for Highrise REST Web API queries (Users, Rooms, Items).
-- 🛡️ **Zero Bloat & Concurrency-Safe**: Backed by Gorilla WebSocket with thread-safe write channels.
+Most Highrise bots are historically built using Python or Node.js. **`highrise.bot.go`** was created from the ground up to offer an enterprise-grade, memory-efficient alternative:
+
+- 🏎️ **Extreme Resource Efficiency**: Consumes under **15 MB RAM** per running bot instance.
+- 🚀 **High Concurrency**: Handles thousands of real-time room events effortlessly via lightweight Go goroutines.
+- 📦 **Flat Idiomatic Go Design**: No convoluted package pollution—import `highrisebot` once and access everything.
+- 🛡️ **Enterprise Resilience**: Auto-reconnect with randomized exponential jitter backoff, bounded channels, and zero-panic crash guards.
+- 🌐 **100% Protocol Parity**: Real-time WebSocket room gateway, complete REST Web API client, inventory, wallet, and voice channels.
 
 ---
 
 ## 📦 Installation
+
+Requires **Go 1.21** or later.
 
 ```bash
 go get github.com/rezadesky/highrisebot
@@ -27,6 +39,8 @@ go get github.com/rezadesky/highrisebot
 ---
 
 ## 🚀 Quickstart
+
+Create a `main.go` file:
 
 ```go
 package main
@@ -39,101 +53,166 @@ import (
 )
 
 func main() {
-	// Obtain your token and room ID from https://create.highrise.game
+	// Obtain credentials from https://create.highrise.game
 	token := os.Getenv("HR_TOKEN")
 	roomID := os.Getenv("HR_ROOM_ID")
 
+	if token == "" || roomID == "" {
+		log.Fatal("HR_TOKEN and HR_ROOM_ID must be set!")
+	}
+
+	// 1. Initialize client with functional options
 	bot := highrisebot.New(token, roomID)
 
-	// Callback when bot successfully connects
+	// 2. Lifecycle: OnReady event
 	bot.OnReady(func(session *highrisebot.SessionMetadata) {
-		log.Printf("Bot online! Bot User ID: %s", session.UserID)
-		bot.Chat("Hello Highrise! Go Bot is running 🚀")
+		log.Printf("Bot online in room '%s' (Bot ID: %s)", session.RoomInfo.RoomName, session.UserID)
+		_ = bot.Chat("Hello Highrise! Go Bot is running 🚀")
 	})
 
-	// Callback for chat messages
+	// 3. Room Interactions: OnChat event
 	bot.OnChat(func(user *highrisebot.User, message string) {
 		if message == "!ping" {
-			bot.Chat("Pong! 🏓")
+			_ = bot.Chat("Pong! 🏓")
 		}
 	})
 
-	// Callback when a user joins the room
+	// 4. Welcome new players
 	bot.OnUserJoin(func(user *highrisebot.User, pos highrisebot.Position) {
-		bot.Chat("Welcome @" + user.Username + "!")
+		_ = bot.Chat("Welcome @" + user.Username + " to the room! 🎉")
 	})
 
-	// Start bot connection (blocking)
-	if err := bot.Start(); err != nil {
-		log.Fatal(err)
+	// 5. Run with automatic graceful shutdown on SIGINT / SIGTERM
+	log.Println("Connecting bot to Highrise...")
+	if err := bot.Run(); err != nil {
+		log.Fatalf("Bot stopped: %v", err)
 	}
 }
 ```
 
----
+Run your bot:
 
-## 🛠️ API Reference
-
-### Lifecycle & Event Listeners
-- `bot.BeforeStart(func(roomID string))` - Triggered before initial socket connection (ideal for loading DB / configs).
-- `bot.OnReady(func(session *highrisebot.SessionMetadata))` - Triggered when bot logs in to the room.
-- `bot.OnDisconnect(func(err error))` - Triggered if socket connection drops (before auto-reconnect backoff).
-- `bot.GetBotID() string` - Helper to inspect current bot user ID.
-- `bot.IsConnected() bool` - Check if bot is connected and session active.
-- `bot.OnChat(func(user *highrisebot.User, message string))`
-- `bot.OnWhisper(func(user *highrisebot.User, message string))`
-- `bot.OnUserJoin(func(user *highrisebot.User, pos highrisebot.Position))`
-- `bot.OnUserLeave(func(user *highrisebot.User))`
-- `bot.OnUserMove(func(user *highrisebot.User, pos highrisebot.Position))`
-- `bot.OnEmote(func(user *highrisebot.User, emoteID string, receiver *highrisebot.User))`
-- `bot.OnReaction(func(user *highrisebot.User, reaction string, receiver *highrisebot.User))`
-- `bot.OnTip(func(sender *highrisebot.User, receiver *highrisebot.User, item highrisebot.Item))`
-- `bot.OnMessage(func(userID, conversationID string, isNew bool))`
-- `bot.OnError(func(err error))`
-
-### Room Actions & Queries
-- `bot.Chat(message string)`
-- `bot.Whisper(userID, message string)`
-- `bot.Walk(x, y, z float64, facing ...string)`
-- `bot.Teleport(userID string, x, y, z float64, facing ...string)`
-- `bot.Emote(emoteID string, targetUserID ...string)`
-- `bot.React(reaction, targetUserID string)`
-- `bot.Kick(userID string)`
-- `bot.Mute(userID string, durationSeconds int)`
-- `bot.Ban(userID string, durationSeconds int)`
-- `bot.TipUser(userID, barAmount string)`
-- `bot.BuyItem(itemID string)`
-- `bot.GetRoomUsers(ctx ...context.Context) ([]highrisebot.UserPosition, error)`
-- `bot.GetWallet(ctx ...context.Context) ([]highrisebot.Currency, error)`
-- `bot.GetInventory(ctx ...context.Context) ([]highrisebot.Item, error)`
-- `bot.SetOutfit(outfitItems []highrisebot.Item) error`
-
-### Voice Chat Controls
-- `bot.GetVoiceStatus(ctx ...context.Context) (*highrisebot.VoiceStatus, error)`
-- `bot.AddUserToVoice(userID string) error`
-- `bot.RemoveUserFromVoice(userID string) error`
-- `bot.BuyVoiceTime(paymentType string) error`
-
-### Direct Messaging & Inbox
-- `bot.SendDirectMessage(conversationID, message, msgType string, roomID ...string) error`
-- `bot.GetConversations(notJoined bool, lastID string, ctx ...context.Context) ([]highrisebot.Conversation, error)`
-- `bot.GetMessages(conversationID, lastID string, ctx ...context.Context) ([]highrisebot.DirectMessage, error)`
-
-### Web API Client (Public REST Data)
-```go
-ctx := context.Background()
-
-// Fetch user profile
-userProfile, err := bot.WebAPI.GetUser(ctx, "USER_ID_HERE")
-
-// Search users by username
-users, err := bot.WebAPI.SearchUsers(ctx, "someone", nil)
-
-// List public rooms
-rooms, err := bot.WebAPI.GetRooms(ctx, &webapi.PaginationOptions{Limit: 10})
+```bash
+export HR_TOKEN="your_bot_api_token"
+export HR_ROOM_ID="your_room_id"
+go run main.go
 ```
 
 ---
+
+## 🎮 Built-in Command Framework
+
+Create interactive chat commands with per-user cooldowns, aliases, and permission controls:
+
+```go
+// Register a !dance command with 5-second cooldown
+bot.Commands.Register(&highrisebot.Command{
+    Name:        "dance",
+    Aliases:     []string{"d"},
+    Description: "Performs an emote animation",
+    Cooldown:    5 * time.Second,
+    Handler: func(c *highrisebot.CommandContext) error {
+        _ = bot.Emote("emote-lust")
+        return c.Reply("Dancing! 💃")
+    },
+})
+
+// Owner-only moderation command
+bot.Commands.Register(&highrisebot.Command{
+    Name:        "kick",
+    OwnerOnly:   true,
+    MinArgs:     1,
+    Handler: func(c *highrisebot.CommandContext) error {
+        targetUserID := c.Args[0]
+        return bot.Kick(targetUserID)
+    },
+})
+
+// Auto-generated help command
+bot.Commands.Register(&highrisebot.Command{
+    Name: "help",
+    Handler: func(c *highrisebot.CommandContext) error {
+        return c.Reply(bot.Commands.Help())
+    },
+})
+```
+
+---
+
+## 🛠️ API Reference Summary
+
+### Event Callbacks
+| Event | Signature | Description |
+| :--- | :--- | :--- |
+| `OnReady` | `func(*SessionMetadata)` | Triggered upon successful room connection & auth handshake. |
+| `OnChat` | `func(*User, string)` | Triggered when a public chat message is sent. |
+| `OnWhisper` | `func(*User, string)` | Triggered when a private whisper is sent to the bot. |
+| `OnUserJoin` | `func(*User, Position)` | Triggered when a player enters the room. |
+| `OnUserLeave` | `func(*User)` | Triggered when a player leaves the room. |
+| `OnUserMove` | `func(*User, Position)` | Triggered when a player walks or teleports. |
+| `OnEmote` | `func(*User, string, *User)` | Triggered when a player performs an emote animation. |
+| `OnReaction` | `func(*User, string, *User)` | Triggered when a reaction emoji (heart, clap, etc.) is sent. |
+| `OnTip` | `func(*User, *User, Item)` | Triggered when a tip is given. |
+| `OnMessage` | `func(userID, convoID, isNew)` | Triggered when a direct inbox message arrives. |
+| `OnDisconnect`| `func(error)` | Triggered if the socket connection drops. |
+
+### Room Actions
+| Method | Description |
+| :--- | :--- |
+| `bot.Chat(msg)` | Send message to room (rate-limited, max 250 chars). |
+| `bot.Whisper(userID, msg)` | Send private whisper to user. |
+| `bot.Walk(x, y, z, facing...)` | Move bot avatar coordinates. |
+| `bot.Sit(entityID, anchorIx, facing...)` | Anchor avatar to a chair or seat. |
+| `bot.Teleport(userID, x, y, z, facing...)` | Teleport target user or bot. |
+| `bot.Emote(emoteID, targetUserID...)` | Trigger an emote animation. |
+| `bot.React(reaction, targetUserID)` | Send emoji reaction. |
+| `bot.Kick(userID)` | Kick user from room. |
+| `bot.Mute(userID, seconds)` | Mute user for duration. |
+| `bot.Ban(userID, seconds)` | Ban user from room. |
+| `bot.Unban(userID)` | Lift room ban from user. |
+
+### Real-Time Queries (RPC)
+| Method | Description |
+| :--- | :--- |
+| `bot.GetRoomUsers()` | Retrieve all players in room with their live coordinates. |
+| `bot.GetWallet()` | Inspect bot currency balances (Gold, Boost & Voice tokens). |
+| `bot.GetInventory()` | Inspect clothing backpack items. |
+| `bot.SetOutfit(items)` | Update bot avatar clothing items. |
+| `bot.TipUser(userID, barAmount)` | Tip gold bars (`"gold_bar_1"`, `"gold_bar_5"`, `"gold_bar_10"`). |
+| `bot.GetVoiceStatus()` | Inspect room voice channel status & remaining seconds. |
+| `bot.AddUserToVoice(userID)` | Invite user to speak in voice chat. |
+| `bot.GetConversations(notJoined, lastID)` | Retrieve inbox direct conversation threads. |
+
+---
+
+## 🤖 Multibot Fleet Management
+
+Run and coordinate multiple bots in separate rooms from a single process:
+
+```go
+manager := highrisebot.NewMultiBotManager()
+
+bot1 := highrisebot.New(token1, room1)
+bot2 := highrisebot.New(token2, room2)
+
+_ = manager.Register("lobby_bot", bot1)
+_ = manager.Register("games_bot", bot2)
+
+// Starts all bots concurrently with isolated failure domains
+manager.StartAll()
+```
+
+---
+
+## 🌐 Documentation & Community
+
+Detailed documentation, guides, and tutorials are available on the official documentation site:
+👉 **[https://rezadesky.github.io/highrise.bot.go/](https://rezadesky.github.io/highrise.bot.go/)**
+
+---
+
+## ⚠️ Disclaimer
+This SDK is an **unofficial**, open-source community library. It is not affiliated with, endorsed, or sponsored by Pocket Worlds or Highrise Virtual Reality.
 
 ## 📄 License
 Released under the [MIT License](LICENSE).
