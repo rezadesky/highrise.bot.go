@@ -11,10 +11,14 @@ import (
 	"time"
 
 	"github.com/rezadesky/highrisebot/chatqueue"
+	"github.com/rezadesky/highrisebot/command"
 	"github.com/rezadesky/highrisebot/events"
 	"github.com/rezadesky/highrisebot/gateway"
+	"github.com/rezadesky/highrisebot/middleware"
 	"github.com/rezadesky/highrisebot/models"
+	"github.com/rezadesky/highrisebot/plugin"
 	"github.com/rezadesky/highrisebot/roomstate"
+	"github.com/rezadesky/highrisebot/scheduler"
 	"github.com/rezadesky/highrisebot/webapi"
 )
 
@@ -27,6 +31,10 @@ type Bot struct {
 	WebAPI     *webapi.Client
 	Dispatcher *events.Dispatcher
 	RoomState  *roomstate.Tracker
+	Commands   *command.Registry
+	Scheduler  *scheduler.Scheduler
+	Plugins    *plugin.Manager
+	Security   *middleware.SecurityManager
 	chatQ      *chatqueue.Queue
 
 	// Session data populated once connected
@@ -73,6 +81,9 @@ func New(token, roomID string, opts ...Option) *Bot {
 	gw := gateway.NewClient(token, roomID, gwOpts)
 	api := webapi.NewClient(cfg.WebAPIURL)
 	tracker := roomstate.NewTracker()
+	cmdReg := command.NewRegistry("!")
+	sched := scheduler.NewScheduler()
+	sec := middleware.NewSecurityManager()
 
 	bot := &Bot{
 		Config:     cfg,
@@ -82,8 +93,13 @@ func New(token, roomID string, opts ...Option) *Bot {
 		WebAPI:     api,
 		Dispatcher: disp,
 		RoomState:  tracker,
+		Commands:   cmdReg,
+		Scheduler:  sched,
+		Security:   sec,
 		status:     StatusDisconnected,
 	}
+
+	bot.Plugins = plugin.NewManager(bot)
 
 	// Initialize rate-limited outgoing message queue (500ms delay)
 	bot.chatQ = chatqueue.NewQueue(500*time.Millisecond, func(m chatqueue.Message) error {
@@ -156,7 +172,22 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 		},
 		OnChat: func(u *models.User, msg string) {
 			b.Dispatcher.Publish(events.EventChat, &models.ChatEvent{User: *u, Message: msg})
-			if b.onChat != nil {
+
+			// Intercept Blacklisted Users
+			if b.Security.IsDenied(u.ID) {
+				return
+			}
+
+			// Automatically evaluate Command Registry
+			ownerID := ""
+			if b.Session != nil {
+				ownerID = b.Session.RoomInfo.OwnerID
+			}
+			handled, _ := b.Commands.Execute(context.Background(), *u, msg, false, func(reply string) error {
+				return b.Chat(reply)
+			}, ownerID)
+
+			if !handled && b.onChat != nil {
 				b.onChat(u, msg)
 			}
 		},
@@ -263,6 +294,7 @@ func (b *Bot) Disconnect() {
 	b.Session = nil
 	b.status = StatusDisconnected
 	b.mu.Unlock()
+	b.Scheduler.Stop()
 	b.chatQ.Close()
 	b.Gateway.Close()
 	b.Dispatcher.Close()
