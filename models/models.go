@@ -39,8 +39,8 @@ type SessionMetadata struct {
 
 // RateLimits indicates current client rate limits.
 type RateLimits struct {
-	ClientRate int `json:"client_rate,omitempty"`
-	ServerRate int `json:"server_rate,omitempty"`
+	Client  []float64 `json:"client,omitempty"`
+	Socials []float64 `json:"socials,omitempty"`
 }
 
 // Item represents a Highrise virtual item/clothing/furniture.
