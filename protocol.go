@@ -1,4 +1,4 @@
-package protocol
+package highrisebot
 
 import (
 	"encoding/json"
@@ -25,46 +25,36 @@ var (
 
 // Envelope represents the top-level Highrise protocol frame.
 type Envelope struct {
-	Type   string          `json:"_type"`
-	RID    string          `json:"rid,omitempty"`
-	Event  string          `json:"event,omitempty"`
-	Data   json.RawMessage `json:"data,omitempty"`
+	Type  string          `json:"_type"`
+	RID   string          `json:"rid,omitempty"`
+	Event string          `json:"event,omitempty"`
+	Data  json.RawMessage `json:"data,omitempty"`
 }
 
 // ErrorPayload represents server error frames.
 type ErrorPayload struct {
-	Type          string `json:"_type"`
-	Message       string `json:"message"`
-	Code          int    `json:"code,omitempty"`
-	DoNotReconnect bool  `json:"do_not_reconnect,omitempty"`
+	Type           string `json:"_type"`
+	Message        string `json:"message"`
+	Code           int    `json:"code,omitempty"`
+	DoNotReconnect bool   `json:"do_not_reconnect,omitempty"`
 }
 
-// Encoder encodes structs/maps to protocol JSON bytes.
-type Encoder struct{}
-
-// NewEncoder creates a new protocol encoder.
-func NewEncoder() *Encoder {
-	return &Encoder{}
-}
+// ProtocolEncoder encodes structs/maps to protocol JSON bytes.
+type ProtocolEncoder struct{}
 
 // Encode converts any payload to raw JSON bytes.
-func (e *Encoder) Encode(v any) ([]byte, error) {
+func (e *ProtocolEncoder) Encode(v any) ([]byte, error) {
 	if v == nil {
 		return nil, ErrInvalidPayload
 	}
 	return json.Marshal(v)
 }
 
-// Decoder parses incoming raw bytes into envelopes and typed messages.
-type Decoder struct{}
-
-// NewDecoder creates a new protocol decoder.
-func NewDecoder() *Decoder {
-	return &Decoder{}
-}
+// ProtocolDecoder parses incoming raw bytes into envelopes and typed messages.
+type ProtocolDecoder struct{}
 
 // DecodeEnvelope unmarshals raw data into a basic protocol Envelope.
-func (d *Decoder) DecodeEnvelope(data []byte) (*Envelope, error) {
+func (d *ProtocolDecoder) DecodeEnvelope(data []byte) (*Envelope, error) {
 	if len(data) == 0 {
 		return nil, ErrInvalidPayload
 	}
@@ -79,6 +69,6 @@ func (d *Decoder) DecodeEnvelope(data []byte) (*Envelope, error) {
 }
 
 // DecodeTyped decodes raw payload into target struct.
-func (d *Decoder) DecodeTyped(data []byte, target any) error {
+func (d *ProtocolDecoder) DecodeTyped(data []byte, target any) error {
 	return json.Unmarshal(data, target)
 }

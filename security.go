@@ -1,11 +1,9 @@
-package middleware
+package highrisebot
 
 import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/rezadesky/highrisebot/models"
 )
 
 // SecurityManager manages user allowlist, denylist, and rate limits.
@@ -48,7 +46,7 @@ func (sm *SecurityManager) IsDenied(userID string) bool {
 }
 
 // Audit logs critical actions taken by the bot.
-func (sm *SecurityManager) Audit(action string, user models.User, details string) {
+func (sm *SecurityManager) Audit(action string, user User, details string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	entry := time.Now().Format(time.RFC3339) + " | " + action + " | User: " + user.Username + "(" + user.ID + ") | " + details

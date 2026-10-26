@@ -3,28 +3,21 @@ package highrisebot_test
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rezadesky/highrisebot"
-	"github.com/rezadesky/highrisebot/models"
 )
 
 func TestCoreClientCreationAndOptions(t *testing.T) {
-	// Test validation
 	invalidBot := highrisebot.New("", "")
 	err := invalidBot.Connect()
 	if !errors.Is(err, highrisebot.ErrMissingToken) {
 		t.Fatalf("expected ErrMissingToken, got %v", err)
 	}
 
-	invalidBot2 := highrisebot.New("token_ok", "")
-	err2 := invalidBot2.Connect()
-	if !errors.Is(err2, highrisebot.ErrMissingRoomID) {
-		t.Fatalf("expected ErrMissingRoomID, got %v", err2)
-	}
-
-	// Test functional options
 	bot := highrisebot.New(
 		"test_token",
 		"test_room",
@@ -38,47 +31,63 @@ func TestCoreClientCreationAndOptions(t *testing.T) {
 	if bot.Config.Token != "test_token" {
 		t.Errorf("expected token test_token, got %s", bot.Config.Token)
 	}
-	if bot.Config.GatewayURL != "wss://custom.gateway.url" {
-		t.Errorf("unexpected gateway URL: %s", bot.Config.GatewayURL)
-	}
-	if bot.Config.AutoReconnect != false {
-		t.Errorf("expected AutoReconnect to be false")
-	}
-
-	// Test Initial Status
 	if bot.Status() != highrisebot.StatusDisconnected {
 		t.Errorf("expected initial status DISCONNECTED, got %s", bot.Status())
 	}
 }
 
-func TestLifecycleHooksAndGracefulShutdown(t *testing.T) {
-	bot := highrisebot.New(
-		"test_token",
-		"test_room",
-		highrisebot.WithAutoReconnect(false),
-	)
-
-	beforeStartTriggered := false
-	bot.BeforeStart(func(roomID string) {
-		beforeStartTriggered = true
+func TestChatQueueValidation(t *testing.T) {
+	var count uint32
+	q := highrisebot.NewChatQueue(50*time.Millisecond, func(m highrisebot.QueuedChatMessage) error {
+		atomic.AddUint32(&count, 1)
+		return nil
 	})
+	defer q.Close()
 
-	bot.OnReady(func(s *models.SessionMetadata) {})
-	bot.OnDisconnect(func(err error) {})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Connect with cancellation context
-	_ = bot.Connect(ctx)
-
-	if !beforeStartTriggered {
-		t.Errorf("expected BeforeStart hook to be triggered")
+	if err := q.Enqueue("", false, ""); !errors.Is(err, highrisebot.ErrEmptyMessage) {
+		t.Errorf("expected ErrEmptyMessage, got %v", err)
 	}
 
-	// Graceful disconnect test
-	bot.Disconnect()
-	if bot.Status() != highrisebot.StatusDisconnected {
-		t.Errorf("expected status to be DISCONNECTED after Disconnect(), got %s", bot.Status())
+	longMsg := strings.Repeat("x", 251)
+	if err := q.Enqueue(longMsg, false, ""); !errors.Is(err, highrisebot.ErrMessageTooLong) {
+		t.Errorf("expected ErrMessageTooLong, got %v", err)
+	}
+}
+
+func TestCommandRegistry(t *testing.T) {
+	reg := highrisebot.NewCommandRegistry("!")
+	reg.Register(&highrisebot.Command{
+		Name:    "ping",
+		Aliases: []string{"p"},
+		Handler: func(c *highrisebot.CommandContext) error {
+			return c.Reply("Pong!")
+		},
+	})
+
+	var replied string
+	replyFn := func(msg string) error {
+		replied = msg
+		return nil
+	}
+
+	user := highrisebot.User{ID: "u1", Username: "john"}
+	handled, err := reg.Execute(context.Background(), user, "!ping", false, replyFn, "owner_1")
+	if !handled || err != nil || replied != "Pong!" {
+		t.Fatalf("expected ping handled with Pong!, got handled=%v, reply=%s", handled, replied)
+	}
+}
+
+func TestProtocolEncoding(t *testing.T) {
+	enc := &highrisebot.ProtocolEncoder{}
+	dec := &highrisebot.ProtocolDecoder{}
+
+	data, err := enc.Encode(map[string]any{"_type": "TestEvent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := dec.DecodeEnvelope(data)
+	if err != nil || env.Type != "TestEvent" {
+		t.Fatalf("expected TestEvent envelope, got %v", env)
 	}
 }

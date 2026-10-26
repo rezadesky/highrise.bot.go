@@ -1,4 +1,4 @@
-package chatqueue
+package highrisebot
 
 import (
 	"context"
@@ -21,19 +21,19 @@ var (
 	ErrEmptyRecipient = errors.New("chat: recipient user ID cannot be empty")
 )
 
-// Message represents a queued chat item.
-type Message struct {
+// QueuedChatMessage represents a queued chat item.
+type QueuedChatMessage struct {
 	Content string
 	Whisper bool
 	UserID  string
 	ErrChan chan error
 }
 
-// Queue manages rate-limited outgoing messages with a configurable throttle delay.
-type Queue struct {
-	ch      chan Message
+// ChatQueue manages rate-limited outgoing messages with a configurable throttle delay.
+type ChatQueue struct {
+	ch      chan QueuedChatMessage
 	delay   time.Duration
-	sender  func(m Message) error
+	sender  func(m QueuedChatMessage) error
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -41,14 +41,14 @@ type Queue struct {
 	mu      sync.Mutex
 }
 
-// NewQueue creates a new rate-limited chat queue.
-func NewQueue(throttleDelay time.Duration, sender func(m Message) error) *Queue {
+// NewChatQueue creates a new rate-limited chat queue.
+func NewChatQueue(throttleDelay time.Duration, sender func(m QueuedChatMessage) error) *ChatQueue {
 	if throttleDelay <= 0 {
-		throttleDelay = 500 * time.Millisecond // default throttle to avoid server rate-limits
+		throttleDelay = 500 * time.Millisecond
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	q := &Queue{
-		ch:      make(chan Message, 128),
+	q := &ChatQueue{
+		ch:      make(chan QueuedChatMessage, 128),
 		delay:   throttleDelay,
 		sender:  sender,
 		ctx:     ctx,
@@ -61,7 +61,7 @@ func NewQueue(throttleDelay time.Duration, sender func(m Message) error) *Queue 
 }
 
 // Enqueue validates and pushes a message to the rate-limited queue.
-func (q *Queue) Enqueue(content string, whisper bool, userID string) error {
+func (q *ChatQueue) Enqueue(content string, whisper bool, userID string) error {
 	if len(content) == 0 {
 		return ErrEmptyMessage
 	}
@@ -73,7 +73,7 @@ func (q *Queue) Enqueue(content string, whisper bool, userID string) error {
 	}
 
 	errChan := make(chan error, 1)
-	msg := Message{
+	msg := QueuedChatMessage{
 		Content: content,
 		Whisper: whisper,
 		UserID:  userID,
@@ -88,7 +88,7 @@ func (q *Queue) Enqueue(content string, whisper bool, userID string) error {
 	}
 }
 
-func (q *Queue) loop() {
+func (q *ChatQueue) loop() {
 	defer q.wg.Done()
 	ticker := time.NewTicker(q.delay)
 	defer ticker.Stop()
@@ -104,7 +104,6 @@ func (q *Queue) loop() {
 			if q.sender != nil {
 				_ = q.sender(msg)
 			}
-			// Enforce delay between messages to prevent spam kicking
 			select {
 			case <-ticker.C:
 			case <-q.ctx.Done():
@@ -115,7 +114,7 @@ func (q *Queue) loop() {
 }
 
 // Close gracefully terminates the chat queue loop.
-func (q *Queue) Close() {
+func (q *ChatQueue) Close() {
 	q.mu.Lock()
 	if !q.running {
 		q.mu.Unlock()

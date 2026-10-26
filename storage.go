@@ -1,4 +1,4 @@
-package storage
+package highrisebot
 
 import (
 	"encoding/json"
@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Adapter defines the persistence interface.
-type Adapter interface {
+// StorageAdapter defines the persistence interface.
+type StorageAdapter interface {
 	Get(key string) ([]byte, error)
 	Set(key string, val []byte, ttl ...time.Duration) error
 	Delete(key string) error
@@ -18,10 +18,10 @@ type Adapter interface {
 // MemoryStorage provides an in-memory thread-safe key-value store with TTL.
 type MemoryStorage struct {
 	mu   sync.RWMutex
-	data map[string]entry
+	data map[string]storageEntry
 }
 
-type entry struct {
+type storageEntry struct {
 	val       []byte
 	expiresAt time.Time
 }
@@ -29,7 +29,7 @@ type entry struct {
 // NewMemoryStorage creates an in-memory storage adapter.
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
-		data: make(map[string]entry),
+		data: make(map[string]storageEntry),
 	}
 }
 
@@ -51,7 +51,7 @@ func (m *MemoryStorage) Set(key string, val []byte, ttl ...time.Duration) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	e := entry{val: val}
+	e := storageEntry{val: val}
 	if len(ttl) > 0 && ttl[0] > 0 {
 		e.expiresAt = time.Now().Add(ttl[0])
 	}
@@ -107,7 +107,6 @@ func (j *JSONFileStorage) Save() error {
 		return err
 	}
 
-	// Atomic write via temp file
 	tmp := j.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err

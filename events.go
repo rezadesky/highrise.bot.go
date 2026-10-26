@@ -1,4 +1,4 @@
-package events
+package highrisebot
 
 import (
 	"context"
@@ -25,6 +25,71 @@ const (
 	EventUnknown   EventType = "unknown"
 )
 
+// ChatEvent represents a public room chat event.
+type ChatEvent struct {
+	User      User   `json:"user"`
+	Message   string `json:"message"`
+	Whisper   bool   `json:"whisper,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+}
+
+// WhisperEvent represents a private direct whisper sent to the bot.
+type WhisperEvent struct {
+	User    User   `json:"user"`
+	Message string `json:"message"`
+}
+
+// UserJoinedEvent represents when a user enters the room.
+type UserJoinedEvent struct {
+	User     User     `json:"user"`
+	Position Position `json:"position"`
+}
+
+// UserLeftEvent represents when a user leaves the room.
+type UserLeftEvent struct {
+	User User `json:"user"`
+}
+
+// UserMovedEvent represents when a user walks or teleports to a new coordinate.
+type UserMovedEvent struct {
+	User     User     `json:"user"`
+	Position Position `json:"position"`
+}
+
+// EmoteEvent represents when a user performs an emote.
+type EmoteEvent struct {
+	User     User   `json:"user"`
+	EmoteID  string `json:"emote_id"`
+	Receiver *User  `json:"receiver,omitempty"`
+}
+
+// ReactionEvent represents when a reaction emoji is sent towards a user.
+type ReactionEvent struct {
+	User     User   `json:"user"`
+	Reaction string `json:"reaction"`
+	Receiver User   `json:"receiver"`
+}
+
+// TipReactionEvent represents when a tip is given to another user.
+type TipReactionEvent struct {
+	Sender   User `json:"sender"`
+	Receiver User `json:"receiver"`
+	Item     Item `json:"item"`
+}
+
+// VoiceEvent represents voice chat state updates.
+type VoiceEvent struct {
+	Users  []User `json:"users"`
+	Status string `json:"status"`
+}
+
+// MessageEvent represents incoming direct inbox messages sent to the bot.
+type MessageEvent struct {
+	UserID            string `json:"user_id"`
+	ConversationID    string `json:"conversation_id"`
+	IsNewConversation bool   `json:"is_new_conversation"`
+}
+
 // HandlerFunc is the function signature for generic event handlers.
 type HandlerFunc func(ctx context.Context, event any) error
 
@@ -40,7 +105,7 @@ type HandlerRegistration struct {
 	eventType  EventType
 	handler    HandlerFunc
 	filter     FilterFunc
-	dispatcher *Dispatcher
+	dispatcher *EventDispatcher
 }
 
 // Unregister removes the handler registration from dispatcher.
@@ -50,31 +115,29 @@ func (hr *HandlerRegistration) Unregister() {
 	}
 }
 
-// Stats tracks event processing counts and errors.
-type Stats struct {
+// EventStats tracks event processing counts and errors.
+type EventStats struct {
 	TotalReceived   uint64
 	TotalDispatched uint64
 	TotalErrors     uint64
 	TotalDropped    uint64
 }
 
-// Dispatcher manages registration, filtering, queuing, and concurrent dispatching of events.
-type Dispatcher struct {
+// EventDispatcher manages registration, filtering, queuing, and concurrent dispatching of events.
+type EventDispatcher struct {
 	mu          sync.RWMutex
 	handlers    map[EventType][]*HandlerRegistration
 	middlewares []Middleware
 	nextID      uint64
 
-	// Event Queue & Backpressure
-	queue       chan QueuedEvent
-	queueCap    int
-	stats       Stats
-	workers     int
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	queue    chan QueuedEvent
+	queueCap int
+	stats    EventStats
+	workers  int
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 
-	// Unknown fallback handler
 	onUnknown func(rawType string, payload []byte)
 }
 
@@ -84,37 +147,26 @@ type QueuedEvent struct {
 	Data any
 }
 
-// DispatcherConfig configures event queue parameters.
-type DispatcherConfig struct {
-	QueueCapacity int // default 1024
-	Workers       int // default 4 workers for parallel dispatching
-}
-
-// NewDispatcher creates an event dispatcher instance.
-func NewDispatcher(cfg ...DispatcherConfig) *Dispatcher {
-	qCap := 1024
-	workers := 4
-	if len(cfg) > 0 {
-		if cfg[0].QueueCapacity > 0 {
-			qCap = cfg[0].QueueCapacity
-		}
-		if cfg[0].Workers > 0 {
-			workers = cfg[0].Workers
-		}
+// NewEventDispatcher creates an event dispatcher instance.
+func NewEventDispatcher(queueCapacity, workers int) *EventDispatcher {
+	if queueCapacity <= 0 {
+		queueCapacity = 1024
+	}
+	if workers <= 0 {
+		workers = 4
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Dispatcher{
+	d := &EventDispatcher{
 		handlers:    make(map[EventType][]*HandlerRegistration),
 		middlewares: make([]Middleware, 0),
-		queue:       make(chan QueuedEvent, qCap),
-		queueCap:    qCap,
+		queue:       make(chan QueuedEvent, queueCapacity),
+		queueCap:    queueCapacity,
 		workers:     workers,
 		ctx:         ctx,
 		cancel:      cancel,
 	}
 
-	// Start worker pool for parallel independent events
 	for i := 0; i < workers; i++ {
 		d.wg.Add(1)
 		go d.workerLoop()
@@ -124,14 +176,14 @@ func NewDispatcher(cfg ...DispatcherConfig) *Dispatcher {
 }
 
 // Use adds middleware to the event pipeline.
-func (d *Dispatcher) Use(mw Middleware) {
+func (d *EventDispatcher) Use(mw Middleware) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.middlewares = append(d.middlewares, mw)
 }
 
 // Register registers a handler with optional filter.
-func (d *Dispatcher) Register(evt EventType, fn HandlerFunc, filter ...FilterFunc) *HandlerRegistration {
+func (d *EventDispatcher) Register(evt EventType, fn HandlerFunc, filter ...FilterFunc) *HandlerRegistration {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -150,7 +202,7 @@ func (d *Dispatcher) Register(evt EventType, fn HandlerFunc, filter ...FilterFun
 	return reg
 }
 
-func (d *Dispatcher) removeHandler(evt EventType, id uint64) {
+func (d *EventDispatcher) removeHandler(evt EventType, id uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -163,15 +215,15 @@ func (d *Dispatcher) removeHandler(evt EventType, id uint64) {
 	}
 }
 
-// OnUnknown sets a fallback handler for unexpected or novel server frames.
-func (d *Dispatcher) OnUnknown(fn func(rawType string, payload []byte)) {
+// OnUnknown sets a fallback handler for unexpected server frames.
+func (d *EventDispatcher) OnUnknown(fn func(rawType string, payload []byte)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.onUnknown = fn
 }
 
 // TriggerUnknown invokes the fallback handler safely.
-func (d *Dispatcher) TriggerUnknown(rawType string, payload []byte) {
+func (d *EventDispatcher) TriggerUnknown(rawType string, payload []byte) {
 	d.mu.RLock()
 	fn := d.onUnknown
 	d.mu.RUnlock()
@@ -181,20 +233,19 @@ func (d *Dispatcher) TriggerUnknown(rawType string, payload []byte) {
 	}
 }
 
-// Publish enqueues an event. If the queue is full, it implements drop policy with metrics logging.
-func (d *Dispatcher) Publish(evt EventType, data any) {
+// Publish enqueues an event.
+func (d *EventDispatcher) Publish(evt EventType, data any) {
 	atomic.AddUint64(&d.stats.TotalReceived, 1)
 
 	select {
 	case d.queue <- QueuedEvent{Type: evt, Data: data}:
 	default:
-		// Backpressure policy: Drop and increment metric to prevent deadlock
 		atomic.AddUint64(&d.stats.TotalDropped, 1)
-		log.Printf("[highrisebot/events] Event queue full (capacity %d), dropped event %s", d.queueCap, evt)
+		log.Printf("[highrisebot/events] Event queue full (cap %d), dropped %s", d.queueCap, evt)
 	}
 }
 
-func (d *Dispatcher) workerLoop() {
+func (d *EventDispatcher) workerLoop() {
 	defer d.wg.Done()
 	for {
 		select {
@@ -209,7 +260,7 @@ func (d *Dispatcher) workerLoop() {
 	}
 }
 
-func (d *Dispatcher) dispatchDirect(evt EventType, data any) {
+func (d *EventDispatcher) dispatchDirect(evt EventType, data any) {
 	d.mu.RLock()
 	handlers := append([]*HandlerRegistration(nil), d.handlers[evt]...)
 	mws := append([]Middleware(nil), d.middlewares...)
@@ -218,18 +269,15 @@ func (d *Dispatcher) dispatchDirect(evt EventType, data any) {
 	atomic.AddUint64(&d.stats.TotalDispatched, 1)
 
 	for _, reg := range handlers {
-		// Event Filtering
 		if reg.filter != nil && !reg.filter(data) {
 			continue
 		}
 
-		// Apply Middlewares
 		finalHandler := reg.handler
 		for i := len(mws) - 1; i >= 0; i-- {
 			finalHandler = mws[i](finalHandler)
 		}
 
-		// Execute with error recovery
 		go func(h HandlerFunc) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -247,8 +295,8 @@ func (d *Dispatcher) dispatchDirect(evt EventType, data any) {
 }
 
 // Stats returns a copy of current event statistics.
-func (d *Dispatcher) Stats() Stats {
-	return Stats{
+func (d *EventDispatcher) Stats() EventStats {
+	return EventStats{
 		TotalReceived:   atomic.LoadUint64(&d.stats.TotalReceived),
 		TotalDispatched: atomic.LoadUint64(&d.stats.TotalDispatched),
 		TotalErrors:     atomic.LoadUint64(&d.stats.TotalErrors),
@@ -257,7 +305,7 @@ func (d *Dispatcher) Stats() Stats {
 }
 
 // Close stops queue workers gracefully.
-func (d *Dispatcher) Close() {
+func (d *EventDispatcher) Close() {
 	d.cancel()
 	d.wg.Wait()
 }

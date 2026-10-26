@@ -1,4 +1,4 @@
-package plugin
+package highrisebot
 
 import (
 	"context"
@@ -21,23 +21,23 @@ type Plugin interface {
 	Stop() error
 }
 
-// Manager registers and manages plugins.
-type Manager struct {
+// PluginManager registers and manages plugins.
+type PluginManager struct {
 	mu      sync.RWMutex
 	plugins map[string]Plugin
 	bot     BotInterface
 }
 
-// NewManager creates a plugin manager.
-func NewManager(bot BotInterface) *Manager {
-	return &Manager{
+// NewPluginManager creates a plugin manager.
+func NewPluginManager(bot BotInterface) *PluginManager {
+	return &PluginManager{
 		plugins: make(map[string]Plugin),
 		bot:     bot,
 	}
 }
 
 // Load initializes and starts a plugin.
-func (m *Manager) Load(p Plugin) error {
+func (m *PluginManager) Load(p Plugin) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -55,7 +55,7 @@ func (m *Manager) Load(p Plugin) error {
 }
 
 // Unload gracefully stops a plugin.
-func (m *Manager) Unload(name string) error {
+func (m *PluginManager) Unload(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

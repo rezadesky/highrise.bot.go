@@ -1,4 +1,4 @@
-package models
+package highrisebot
 
 // User represents a Highrise player profile.
 type User struct {
@@ -30,11 +30,11 @@ type RoomInfo struct {
 
 // SessionMetadata represents data received upon successful bot connection.
 type SessionMetadata struct {
-	UserID        string        `json:"user_id"`
-	RoomInfo      RoomInfo      `json:"room_info"`
-	RateLimits    RateLimits    `json:"rate_limits,omitempty"`
-	ConnectionID  string        `json:"connection_id,omitempty"`
-	SDKVersion    string        `json:"sdk_version,omitempty"`
+	UserID       string     `json:"user_id"`
+	RoomInfo     RoomInfo   `json:"room_info"`
+	RateLimits   RateLimits `json:"rate_limits,omitempty"`
+	ConnectionID string     `json:"connection_id,omitempty"`
+	SDKVersion   string     `json:"sdk_version,omitempty"`
 }
 
 // RateLimits indicates current client rate limits.
@@ -53,6 +53,12 @@ type Item struct {
 	Category      string `json:"category,omitempty"`
 	ItemName      string `json:"item_name,omitempty"`
 	Rarity        string `json:"rarity,omitempty"`
+}
+
+// Currency represents in-game wallet currencies (Gold, Bubbles).
+type Currency struct {
+	Type   string `json:"type"` // "gold" or "bubbles"
+	Amount int    `json:"amount"`
 }
 
 // UserPosition pairs a User with their current Position in a room.
@@ -84,10 +90,4 @@ type DirectMessage struct {
 	Message        string `json:"message"`
 	Type           string `json:"type,omitempty"` // "text" or "invite"
 	CreatedAt      string `json:"created_at,omitempty"`
-}
-
-// Currency represents in-game wallet currencies (Gold, Bubbles).
-type Currency struct {
-	Type   string `json:"type"`   // "gold" or "bubbles"
-	Amount int    `json:"amount"`
 }

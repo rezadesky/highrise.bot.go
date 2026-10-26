@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/rezadesky/highrisebot/webapi"
+	"github.com/rezadesky/highrisebot"
 )
 
 func main() {
-	client := webapi.NewClient("")
+	client := highrisebot.NewWebAPIClient("")
 	ctx := context.Background()
 
 	// 1. Fetch public rooms
 	fmt.Println("Fetching rooms...")
-	rooms, err := client.GetRooms(ctx, &webapi.PaginationOptions{Limit: 5})
+	rooms, err := client.GetRooms(ctx, &highrisebot.PaginationOptions{Limit: 5})
 	if err != nil {
 		log.Fatalf("Failed to fetch rooms: %v", err)
 	}
@@ -25,7 +25,7 @@ func main() {
 
 	// 2. Search users
 	fmt.Println("\nSearching users...")
-	users, err := client.SearchUsers(ctx, "test", &webapi.PaginationOptions{Limit: 3})
+	users, err := client.SearchUsers(ctx, "test", &highrisebot.PaginationOptions{Limit: 3})
 	if err != nil {
 		log.Fatalf("Failed to search users: %v", err)
 	}

@@ -2,24 +2,11 @@ package highrisebot
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/rezadesky/highrisebot/chatqueue"
-	"github.com/rezadesky/highrisebot/command"
-	"github.com/rezadesky/highrisebot/events"
-	"github.com/rezadesky/highrisebot/gateway"
-	"github.com/rezadesky/highrisebot/middleware"
-	"github.com/rezadesky/highrisebot/models"
-	"github.com/rezadesky/highrisebot/plugin"
-	"github.com/rezadesky/highrisebot/roomstate"
-	"github.com/rezadesky/highrisebot/scheduler"
-	"github.com/rezadesky/highrisebot/webapi"
 )
 
 // Bot represents the main Highrise Bot client.
@@ -27,33 +14,31 @@ type Bot struct {
 	Config     Config
 	Token      string
 	RoomID     string
-	Gateway    *gateway.Client
-	WebAPI     *webapi.Client
-	Dispatcher *events.Dispatcher
-	RoomState  *roomstate.Tracker
-	Commands   *command.Registry
-	Scheduler  *scheduler.Scheduler
-	Plugins    *plugin.Manager
-	Security   *middleware.SecurityManager
-	chatQ      *chatqueue.Queue
+	Gateway    *GatewayClient
+	WebAPI     *WebAPIClient
+	Dispatcher *EventDispatcher
+	RoomState  *RoomTracker
+	Commands   *CommandRegistry
+	Scheduler  *BotScheduler
+	Plugins    *PluginManager
+	Security   *SecurityManager
+	chatQ      *ChatQueue
 
-	// Session data populated once connected
-	Session *models.SessionMetadata
+	Session *SessionMetadata
 	status  ConnectionStatus
 	mu      sync.RWMutex
 
-	// Direct event callback registrations
 	beforeStart  func(roomID string)
-	onReady      func(*models.SessionMetadata)
+	onReady      func(*SessionMetadata)
 	onDisconnect func(error)
-	onChat       func(*models.User, string)
-	onWhisper    func(*models.User, string)
-	onUserJoin   func(*models.User, models.Position)
-	onUserLeave  func(*models.User)
-	onUserMove   func(*models.User, models.Position)
-	onEmote      func(*models.User, string, *models.User)
-	onReaction   func(*models.User, string, *models.User)
-	onTip        func(*models.User, *models.User, models.Item)
+	onChat       func(*User, string)
+	onWhisper    func(*User, string)
+	onUserJoin   func(*User, Position)
+	onUserLeave  func(*User)
+	onUserMove   func(*User, Position)
+	onEmote      func(*User, string, *User)
+	onReaction   func(*User, string, *User)
+	onTip        func(*User, *User, Item)
 	onMessage    func(userID, conversationID string, isNew bool)
 	onError      func(error)
 }
@@ -68,7 +53,7 @@ func New(token, roomID string, opts ...Option) *Bot {
 		opt(&cfg)
 	}
 
-	gwOpts := gateway.GatewayOptions{
+	gwOpts := GatewayOptions{
 		GatewayURL:        cfg.GatewayURL,
 		HandshakeTimeout:  cfg.HandshakeTimeout,
 		WriteWait:         cfg.WriteWait,
@@ -77,13 +62,13 @@ func New(token, roomID string, opts ...Option) *Bot {
 		AutoReconnect:     cfg.AutoReconnect,
 	}
 
-	disp := events.NewDispatcher()
-	gw := gateway.NewClient(token, roomID, gwOpts)
-	api := webapi.NewClient(cfg.WebAPIURL)
-	tracker := roomstate.NewTracker()
-	cmdReg := command.NewRegistry("!")
-	sched := scheduler.NewScheduler()
-	sec := middleware.NewSecurityManager()
+	disp := NewEventDispatcher(1024, 4)
+	gw := NewGatewayClient(token, roomID, gwOpts)
+	api := NewWebAPIClient(cfg.WebAPIURL)
+	tracker := NewRoomTracker()
+	cmdReg := NewCommandRegistry("!")
+	sched := NewBotScheduler()
+	sec := NewSecurityManager()
 
 	bot := &Bot{
 		Config:     cfg,
@@ -99,10 +84,9 @@ func New(token, roomID string, opts ...Option) *Bot {
 		status:     StatusDisconnected,
 	}
 
-	bot.Plugins = plugin.NewManager(bot)
+	bot.Plugins = NewPluginManager(bot)
 
-	// Initialize rate-limited outgoing message queue (500ms delay)
-	bot.chatQ = chatqueue.NewQueue(500*time.Millisecond, func(m chatqueue.Message) error {
+	bot.chatQ = NewChatQueue(500*time.Millisecond, func(m QueuedChatMessage) error {
 		if m.Whisper {
 			return bot.rawWhisper(m.UserID, m.Content)
 		}
@@ -146,13 +130,11 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 		c = context.Background()
 	}
 
-	// Wire user handlers to gateway handlers
-	b.Gateway.Handlers = gateway.HandlerFuncs{
+	b.Gateway.Handlers = GatewayHandlers{
 		BeforeStart: b.beforeStart,
-		OnReady: func(session *models.SessionMetadata) {
+		OnReady: func(session *SessionMetadata) {
 			b.Session = session
-			b.Dispatcher.Publish(events.EventReady, session)
-			// Auto fetch initial room users to sync state tracker
+			b.Dispatcher.Publish(EventReady, session)
 			go func() {
 				if users, err := b.GetRoomUsers(); err == nil {
 					b.RoomState.SetUsers(users)
@@ -170,15 +152,13 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 				b.onDisconnect(err)
 			}
 		},
-		OnChat: func(u *models.User, msg string) {
-			b.Dispatcher.Publish(events.EventChat, &models.ChatEvent{User: *u, Message: msg})
+		OnChat: func(u *User, msg string) {
+			b.Dispatcher.Publish(EventChat, &ChatEvent{User: *u, Message: msg})
 
-			// Intercept Blacklisted Users
 			if b.Security.IsDenied(u.ID) {
 				return
 			}
 
-			// Automatically evaluate Command Registry
 			ownerID := ""
 			if b.Session != nil {
 				ownerID = b.Session.RoomInfo.OwnerID
@@ -191,61 +171,61 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 				b.onChat(u, msg)
 			}
 		},
-		OnWhisper: func(u *models.User, msg string) {
-			b.Dispatcher.Publish(events.EventWhisper, &models.WhisperEvent{User: *u, Message: msg})
+		OnWhisper: func(u *User, msg string) {
+			b.Dispatcher.Publish(EventWhisper, &WhisperEvent{User: *u, Message: msg})
 			if b.onWhisper != nil {
 				b.onWhisper(u, msg)
 			}
 		},
-		OnUserJoin: func(u *models.User, pos models.Position) {
+		OnUserJoin: func(u *User, pos Position) {
 			b.RoomState.OnUserJoined(*u, pos)
-			b.Dispatcher.Publish(events.EventUserJoin, &models.UserJoinedEvent{User: *u, Position: pos})
+			b.Dispatcher.Publish(EventUserJoin, &UserJoinedEvent{User: *u, Position: pos})
 			if b.onUserJoin != nil {
 				b.onUserJoin(u, pos)
 			}
 		},
-		OnUserLeave: func(u *models.User) {
+		OnUserLeave: func(u *User) {
 			b.RoomState.OnUserLeft(u.ID)
-			b.Dispatcher.Publish(events.EventUserLeave, &models.UserLeftEvent{User: *u})
+			b.Dispatcher.Publish(EventUserLeave, &UserLeftEvent{User: *u})
 			if b.onUserLeave != nil {
 				b.onUserLeave(u)
 			}
 		},
-		OnUserMove: func(u *models.User, pos models.Position) {
+		OnUserMove: func(u *User, pos Position) {
 			b.RoomState.OnUserMoved(u.ID, pos)
-			b.Dispatcher.Publish(events.EventUserMove, &models.UserMovedEvent{User: *u, Position: pos})
+			b.Dispatcher.Publish(EventUserMove, &UserMovedEvent{User: *u, Position: pos})
 			if b.onUserMove != nil {
 				b.onUserMove(u, pos)
 			}
 		},
-		OnEmote: func(u *models.User, emoteID string, receiver *models.User) {
-			b.Dispatcher.Publish(events.EventEmote, &models.EmoteEvent{User: *u, EmoteID: emoteID, Receiver: receiver})
+		OnEmote: func(u *User, emoteID string, receiver *User) {
+			b.Dispatcher.Publish(EventEmote, &EmoteEvent{User: *u, EmoteID: emoteID, Receiver: receiver})
 			if b.onEmote != nil {
 				b.onEmote(u, emoteID, receiver)
 			}
 		},
-		OnReaction: func(u *models.User, reaction string, receiver *models.User) {
-			rec := models.User{}
+		OnReaction: func(u *User, reaction string, receiver *User) {
+			rec := User{}
 			if receiver != nil {
 				rec = *receiver
 			}
-			b.Dispatcher.Publish(events.EventReaction, &models.ReactionEvent{User: *u, Reaction: reaction, Receiver: rec})
+			b.Dispatcher.Publish(EventReaction, &ReactionEvent{User: *u, Reaction: reaction, Receiver: rec})
 			if b.onReaction != nil {
 				b.onReaction(u, reaction, receiver)
 			}
 		},
-		OnTip: func(sender *models.User, receiver *models.User, item models.Item) {
-			rec := models.User{}
+		OnTip: func(sender *User, receiver *User, item Item) {
+			rec := User{}
 			if receiver != nil {
 				rec = *receiver
 			}
-			b.Dispatcher.Publish(events.EventTip, &models.TipReactionEvent{Sender: *sender, Receiver: rec, Item: item})
+			b.Dispatcher.Publish(EventTip, &TipReactionEvent{Sender: *sender, Receiver: rec, Item: item})
 			if b.onTip != nil {
 				b.onTip(sender, receiver, item)
 			}
 		},
 		OnMessage: func(userID, conversationID string, isNew bool) {
-			b.Dispatcher.Publish(events.EventMessage, &models.MessageEvent{UserID: userID, ConversationID: conversationID, IsNewConversation: isNew})
+			b.Dispatcher.Publish(EventMessage, &MessageEvent{UserID: userID, ConversationID: conversationID, IsNewConversation: isNew})
 			if b.onMessage != nil {
 				b.onMessage(userID, conversationID, isNew)
 			}
@@ -306,12 +286,12 @@ func (b *Bot) Stop() {
 }
 
 // AddMiddleware adds an interceptor middleware to the event pipeline.
-func (b *Bot) AddMiddleware(mw events.Middleware) {
+func (b *Bot) AddMiddleware(mw Middleware) {
 	b.Dispatcher.Use(mw)
 }
 
 // On registers a generic handler for any EventType with optional filter and returns an unregistration handle.
-func (b *Bot) On(evt events.EventType, fn events.HandlerFunc, filter ...events.FilterFunc) *events.HandlerRegistration {
+func (b *Bot) On(evt EventType, fn HandlerFunc, filter ...FilterFunc) *HandlerRegistration {
 	return b.Dispatcher.Register(evt, fn, filter...)
 }
 
@@ -321,7 +301,7 @@ func (b *Bot) OnUnknown(fn func(rawType string, payload []byte)) {
 }
 
 // EventStats returns metrics of events received, dispatched, dropped, and errored.
-func (b *Bot) EventStats() events.Stats {
+func (b *Bot) EventStats() EventStats {
 	return b.Dispatcher.Stats()
 }
 
@@ -331,7 +311,7 @@ func (b *Bot) BeforeStart(fn func(roomID string)) {
 	b.beforeStart = fn
 }
 
-func (b *Bot) OnReady(fn func(*models.SessionMetadata)) {
+func (b *Bot) OnReady(fn func(*SessionMetadata)) {
 	b.onReady = fn
 }
 
@@ -339,35 +319,35 @@ func (b *Bot) OnDisconnect(fn func(err error)) {
 	b.onDisconnect = fn
 }
 
-func (b *Bot) OnChat(fn func(*models.User, string)) {
+func (b *Bot) OnChat(fn func(*User, string)) {
 	b.onChat = fn
 }
 
-func (b *Bot) OnWhisper(fn func(*models.User, string)) {
+func (b *Bot) OnWhisper(fn func(*User, string)) {
 	b.onWhisper = fn
 }
 
-func (b *Bot) OnUserJoin(fn func(*models.User, models.Position)) {
+func (b *Bot) OnUserJoin(fn func(*User, Position)) {
 	b.onUserJoin = fn
 }
 
-func (b *Bot) OnUserLeave(fn func(*models.User)) {
+func (b *Bot) OnUserLeave(fn func(*User)) {
 	b.onUserLeave = fn
 }
 
-func (b *Bot) OnUserMove(fn func(*models.User, models.Position)) {
+func (b *Bot) OnUserMove(fn func(*User, Position)) {
 	b.onUserMove = fn
 }
 
-func (b *Bot) OnEmote(fn func(*models.User, string, *models.User)) {
+func (b *Bot) OnEmote(fn func(*User, string, *User)) {
 	b.onEmote = fn
 }
 
-func (b *Bot) OnReaction(fn func(*models.User, string, *models.User)) {
+func (b *Bot) OnReaction(fn func(*User, string, *User)) {
 	b.onReaction = fn
 }
 
-func (b *Bot) OnTip(fn func(sender *models.User, receiver *models.User, item models.Item)) {
+func (b *Bot) OnTip(fn func(sender *User, receiver *User, item Item)) {
 	b.onTip = fn
 }
 
@@ -391,427 +371,3 @@ func (b *Bot) GetBotID() string {
 func (b *Bot) IsConnected() bool {
 	return b.Session != nil
 }
-
-// Outgoing Bot Actions
-
-// Chat sends a public message in the room via rate-limited queue with length validation.
-func (b *Bot) Chat(message string) error {
-	return b.chatQ.Enqueue(message, false, "")
-}
-
-// Whisper sends a private message to a specific user via rate-limited queue with validation.
-func (b *Bot) Whisper(userID, message string) error {
-	return b.chatQ.Enqueue(message, true, userID)
-}
-
-func (b *Bot) rawChat(message string) error {
-	payload := map[string]any{
-		"_type":   "ChatRequest",
-		"message": message,
-	}
-	return b.Gateway.Send(payload)
-}
-
-func (b *Bot) rawWhisper(userID, message string) error {
-	payload := map[string]any{
-		"_type":   "ChatRequest",
-		"message": message,
-		"whisper": true,
-		"user_id": userID,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Sit anchors the avatar to a chair or seat entity in the room.
-func (b *Bot) Sit(entityID string, anchorIx int, facing ...string) error {
-	if entityID == "" {
-		return errors.New("sit: entityID is required")
-	}
-	face := "FrontRight"
-	if len(facing) > 0 && facing[0] != "" {
-		face = facing[0]
-	}
-	payload := map[string]any{
-		"_type": "MoveUserRequest",
-		"position": map[string]any{
-			"entity_id": entityID,
-			"anchor_ix": anchorIx,
-			"facing":    face,
-		},
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Unban removes a room ban from a user.
-func (b *Bot) Unban(userID string) error {
-	if userID == "" {
-		return errors.New("unban: target userID is required")
-	}
-	payload := map[string]any{
-		"_type":   "ModerateRoomRequest",
-		"user_id": userID,
-		"action":  "unban",
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Walk moves the bot avatar to a target coordinate in the room with coordinate validation.
-func (b *Bot) Walk(x, y, z float64, facing ...string) error {
-	if x < 0 || y < 0 || z < 0 {
-		return errors.New("walk: coordinates must be positive numbers")
-	}
-	face := "FrontRight"
-	if len(facing) > 0 && facing[0] != "" {
-		face = facing[0]
-	}
-	payload := map[string]any{
-		"_type": "MoveUserRequest",
-		"position": map[string]any{
-			"x":      x,
-			"y":      y,
-			"z":      z,
-			"facing": face,
-		},
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Teleport moves a specific user (or bot itself) immediately to coordinates with validation.
-func (b *Bot) Teleport(userID string, x, y, z float64, facing ...string) error {
-	if userID == "" {
-		return errors.New("teleport: target userID is required")
-	}
-	if x < 0 || y < 0 || z < 0 {
-		return errors.New("teleport: coordinates must be positive numbers")
-	}
-	face := "FrontRight"
-	if len(facing) > 0 && facing[0] != "" {
-		face = facing[0]
-	}
-	payload := map[string]any{
-		"_type":   "TeleportRequest",
-		"user_id": userID,
-		"position": map[string]any{
-			"x":      x,
-			"y":      y,
-			"z":      z,
-			"facing": face,
-		},
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Emote triggers an emote animation on the bot or a target user.
-func (b *Bot) Emote(emoteID string, targetUserID ...string) error {
-	payload := map[string]any{
-		"_type":    "EmoteRequest",
-		"emote_id": emoteID,
-	}
-	if len(targetUserID) > 0 && targetUserID[0] != "" {
-		payload["target_user_id"] = targetUserID[0]
-	}
-	return b.Gateway.Send(payload)
-}
-
-// React sends an emoji reaction to a user.
-func (b *Bot) React(reaction, targetUserID string) error {
-	payload := map[string]any{
-		"_type":          "ReactionRequest",
-		"reaction":       reaction,
-		"target_user_id": targetUserID,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Kick kicks a user from the room.
-func (b *Bot) Kick(userID string) error {
-	payload := map[string]any{
-		"_type":   "ModerateRoomRequest",
-		"user_id": userID,
-		"action":  "kick",
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Mute mutes a user in the room for a duration in seconds.
-func (b *Bot) Mute(userID string, durationSeconds int) error {
-	payload := map[string]any{
-		"_type":    "ModerateRoomRequest",
-		"user_id":  userID,
-		"action":   "mute",
-		"duration": durationSeconds,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// Ban bans a user from the room.
-func (b *Bot) Ban(userID string, durationSeconds int) error {
-	payload := map[string]any{
-		"_type":    "ModerateRoomRequest",
-		"user_id":  userID,
-		"action":   "ban",
-		"duration": durationSeconds,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// GetRoomUsers fetches all users currently in the room along with their positions.
-func (b *Bot) GetRoomUsers(ctx ...context.Context) ([]models.UserPosition, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type": "GetRoomUsersRequest",
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Content [][]json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-
-	results := make([]models.UserPosition, 0, len(resp.Content))
-	for _, pair := range resp.Content {
-		if len(pair) >= 2 {
-			var u models.User
-			var p models.Position
-			_ = json.Unmarshal(pair[0], &u)
-			_ = json.Unmarshal(pair[1], &p)
-			results = append(results, models.UserPosition{User: u, Position: p})
-		}
-	}
-	return results, nil
-}
-
-// GetWallet retrieves the current currency balances of the bot (gold, tokens).
-func (b *Bot) GetWallet(ctx ...context.Context) ([]models.Currency, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type": "GetWalletRequest",
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Content []models.Currency `json:"content"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Content, nil
-}
-
-// GetInventory retrieves the bot's avatar clothing inventory.
-func (b *Bot) GetInventory(ctx ...context.Context) ([]models.Item, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type": "GetInventoryRequest",
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Items []models.Item `json:"items"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
-}
-
-// SetOutfit updates the bot's avatar outfit with a list of item IDs.
-func (b *Bot) SetOutfit(outfitItems []models.Item) error {
-	payload := map[string]any{
-		"_type":  "SetOutfitRequest",
-		"outfit": outfitItems,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// TipUser tips a user in the room with gold bars.
-// Valid bar denominations: "gold_bar_1", "gold_bar_5", "gold_bar_10", "gold_bar_50", "gold_bar_100", "gold_bar_500", "gold_bar_1k"
-func (b *Bot) TipUser(userID, barAmount string) error {
-	payload := map[string]any{
-		"_type":   "TipUserRequest",
-		"user_id": userID,
-		"bar":     barAmount,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// BuyItem purchases an item using the bot's wallet.
-func (b *Bot) BuyItem(itemID string) error {
-	payload := map[string]any{
-		"_type":   "BuyItemRequest",
-		"item_id": itemID,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// BuyVoiceTime buys voice chat time for the room using tokens or gold.
-// paymentType can be "bot_wallet_only", "bot_wallet_priority", or "user_wallet_only".
-func (b *Bot) BuyVoiceTime(paymentType string) error {
-	if paymentType == "" {
-		paymentType = "bot_wallet_only"
-	}
-	payload := map[string]any{
-		"_type":        "BuyVoiceTimeRequest",
-		"payment_type": paymentType,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// GetVoiceStatus returns current room voice chat details.
-func (b *Bot) GetVoiceStatus(ctx ...context.Context) (*models.VoiceStatus, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type": "GetVoiceStatusRequest",
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		VoiceStatus models.VoiceStatus `json:"voice_status"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return &resp.VoiceStatus, nil
-}
-
-// AddUserToVoice invites/adds a user to room voice chat.
-func (b *Bot) AddUserToVoice(userID string) error {
-	payload := map[string]any{
-		"_type":   "AddUserToVoiceRequest",
-		"user_id": userID,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// RemoveUserFromVoice removes a user from room voice chat.
-func (b *Bot) RemoveUserFromVoice(userID string) error {
-	payload := map[string]any{
-		"_type":   "RemoveUserFromVoiceRequest",
-		"user_id": userID,
-	}
-	return b.Gateway.Send(payload)
-}
-
-// SendDirectMessage sends a message in an inbox direct conversation.
-// msgType can be "text" or "invite" (if "invite", pass roomID).
-func (b *Bot) SendDirectMessage(conversationID, message, msgType string, roomID ...string) error {
-	if msgType == "" {
-		msgType = "text"
-	}
-	payload := map[string]any{
-		"_type":           "SendMessageRequest",
-		"conversation_id": conversationID,
-		"message":         message,
-		"type":            msgType,
-	}
-	if len(roomID) > 0 && roomID[0] != "" {
-		payload["room_id"] = roomID[0]
-	}
-	return b.Gateway.Send(payload)
-}
-
-// GetConversations retrieves recent direct message inbox threads.
-func (b *Bot) GetConversations(notJoined bool, lastID string, ctx ...context.Context) ([]models.Conversation, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type":      "GetConversationsRequest",
-		"not_joined": notJoined,
-	}
-	if lastID != "" {
-		payload["last_id"] = lastID
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Conversations []models.Conversation `json:"conversations"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Conversations, nil
-}
-
-// GetMessages retrieves messages from an inbox conversation.
-func (b *Bot) GetMessages(conversationID, lastID string, ctx ...context.Context) ([]models.DirectMessage, error) {
-	c := context.Background()
-	if len(ctx) > 0 {
-		c = ctx[0]
-	}
-
-	payload := map[string]any{
-		"_type":           "GetMessagesRequest",
-		"conversation_id": conversationID,
-	}
-	if lastID != "" {
-		payload["last_id"] = lastID
-	}
-
-	data, err := b.Gateway.Request(c, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Messages []models.DirectMessage `json:"messages"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Messages, nil
-}
-
-// Export models directly as alias for convenience
-type (
-	User            = models.User
-	Position        = models.Position
-	UserPosition    = models.UserPosition
-	RoomInfo        = models.RoomInfo
-	SessionMetadata = models.SessionMetadata
-	Item            = models.Item
-	Currency        = models.Currency
-	VoiceStatus     = models.VoiceStatus
-	Conversation    = models.Conversation
-	DirectMessage   = models.DirectMessage
-)

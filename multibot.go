@@ -1,35 +1,33 @@
-package multibot
+package highrisebot
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"sync"
-
-	"github.com/rezadesky/highrisebot"
 )
 
-// Manager coordinates running and lifecycle of multiple bots in a single process.
-type Manager struct {
+// MultiBotManager coordinates running and lifecycle of multiple bots in a single process.
+type MultiBotManager struct {
 	mu   sync.RWMutex
-	bots map[string]*highrisebot.Bot
+	bots map[string]*Bot
 	wg   sync.WaitGroup
 	ctx  context.Context
 	stop context.CancelFunc
 }
 
-// NewManager creates a multibot manager.
-func NewManager() *Manager {
+// NewMultiBotManager creates a multibot manager.
+func NewMultiBotManager() *MultiBotManager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{
-		bots: make(map[string]*highrisebot.Bot),
+	return &MultiBotManager{
+		bots: make(map[string]*Bot),
 		ctx:  ctx,
 		stop: cancel,
 	}
 }
 
 // Register registers a bot with a unique label identifier.
-func (m *Manager) Register(name string, bot *highrisebot.Bot) error {
+func (m *MultiBotManager) Register(name string, bot *Bot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -41,7 +39,7 @@ func (m *Manager) Register(name string, bot *highrisebot.Bot) error {
 }
 
 // StartBot starts a specific registered bot asynchronously.
-func (m *Manager) StartBot(name string) error {
+func (m *MultiBotManager) StartBot(name string) error {
 	m.mu.RLock()
 	bot, exists := m.bots[name]
 	m.mu.RUnlock()
@@ -59,7 +57,7 @@ func (m *Manager) StartBot(name string) error {
 }
 
 // StartAll starts all registered bots concurrently.
-func (m *Manager) StartAll() {
+func (m *MultiBotManager) StartAll() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -69,7 +67,7 @@ func (m *Manager) StartAll() {
 }
 
 // StopBot stops a specific bot gracefully.
-func (m *Manager) StopBot(name string) {
+func (m *MultiBotManager) StopBot(name string) {
 	m.mu.RLock()
 	bot, exists := m.bots[name]
 	m.mu.RUnlock()
@@ -80,7 +78,7 @@ func (m *Manager) StopBot(name string) {
 }
 
 // StopAll stops all bots coordinatedly.
-func (m *Manager) StopAll() {
+func (m *MultiBotManager) StopAll() {
 	m.stop()
 	m.mu.RLock()
 	for _, b := range m.bots {
@@ -91,7 +89,7 @@ func (m *Manager) StopAll() {
 }
 
 // Count returns the number of registered bots.
-func (m *Manager) Count() int {
+func (m *MultiBotManager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.bots)

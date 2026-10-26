@@ -1,9 +1,8 @@
-package gateway
+package highrisebot
 
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,8 +12,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/rezadesky/highrisebot/models"
-	"github.com/rezadesky/highrisebot/protocol"
 )
 
 const (
@@ -23,25 +20,25 @@ const (
 	defaultPongWait   = 60 * time.Second
 )
 
-// HandlerFuncs holds all dispatch callbacks.
-type HandlerFuncs struct {
-	BeforeStart func(roomID string)
-	OnReady     func(*models.SessionMetadata)
+// GatewayHandlers holds all dispatch callbacks for the gateway.
+type GatewayHandlers struct {
+	BeforeStart  func(roomID string)
+	OnReady      func(*SessionMetadata)
 	OnDisconnect func(err error)
-	OnChat      func(*models.User, string)
-	OnWhisper   func(*models.User, string)
-	OnUserJoin  func(*models.User, models.Position)
-	OnUserLeave func(*models.User)
-	OnUserMove  func(*models.User, models.Position)
-	OnEmote     func(*models.User, string, *models.User)
-	OnReaction  func(*models.User, string, *models.User)
-	OnTip       func(*models.User, *models.User, models.Item)
-	OnMessage   func(userID, conversationID string, isNew bool)
-	OnError     func(error)
+	OnChat       func(*User, string)
+	OnWhisper    func(*User, string)
+	OnUserJoin   func(*User, Position)
+	OnUserLeave  func(*User)
+	OnUserMove   func(*User, Position)
+	OnEmote      func(*User, string, *User)
+	OnReaction   func(*User, string, *User)
+	OnTip        func(*User, *User, Item)
+	OnMessage    func(userID, conversationID string, isNew bool)
+	OnError      func(error)
 }
 
-// Client manages the live WebSocket gateway connection to Highrise.
-type Client struct {
+// GatewayClient manages the live WebSocket gateway connection to Highrise.
+type GatewayClient struct {
 	GatewayURL        string
 	Token             string
 	RoomID            string
@@ -50,7 +47,7 @@ type Client struct {
 	PongWait          time.Duration
 	MaxReconnectDelay time.Duration
 	AutoReconnect     bool
-	Handlers          HandlerFuncs
+	Handlers          GatewayHandlers
 
 	conn      *websocket.Conn
 	mu        sync.Mutex
@@ -59,14 +56,13 @@ type Client struct {
 	closeOnce sync.Once
 	running   bool
 
-	// Request tracking for RPC responses (rid -> response channel)
 	pendingMu sync.Mutex
 	pending   map[string]chan []byte
 
-	// Status hook
+	encoder *ProtocolEncoder
+	decoder *ProtocolDecoder
+
 	OnStatusChange func(status string)
-	encoder *protocol.Encoder
-	decoder *protocol.Decoder
 }
 
 // GatewayOptions holds client parameters.
@@ -80,8 +76,8 @@ type GatewayOptions struct {
 	TLSConfig         *tls.Config
 }
 
-// NewClient initializes a new Gateway Client instance.
-func NewClient(token, roomID string, opts ...GatewayOptions) *Client {
+// NewGatewayClient initializes a new Gateway Client instance.
+func NewGatewayClient(token, roomID string, opts ...GatewayOptions) *GatewayClient {
 	opt := GatewayOptions{
 		GatewayURL:        DefaultGatewayURL,
 		HandshakeTimeout:  15 * time.Second,
@@ -110,7 +106,7 @@ func NewClient(token, roomID string, opts ...GatewayOptions) *Client {
 		opt.AutoReconnect = o.AutoReconnect
 	}
 
-	return &Client{
+	return &GatewayClient{
 		GatewayURL:        opt.GatewayURL,
 		Token:             token,
 		RoomID:            roomID,
@@ -122,13 +118,13 @@ func NewClient(token, roomID string, opts ...GatewayOptions) *Client {
 		writeChan:         make(chan []byte, 128),
 		stopChan:          make(chan struct{}),
 		pending:           make(map[string]chan []byte),
-		encoder:           protocol.NewEncoder(),
-		decoder:           protocol.NewDecoder(),
+		encoder:           &ProtocolEncoder{},
+		decoder:           &ProtocolDecoder{},
 	}
 }
 
 // Request sends an RPC request and waits for the response matching rid with timeout.
-func (c *Client) Request(ctx context.Context, payload map[string]any) ([]byte, error) {
+func (c *GatewayClient) Request(ctx context.Context, payload map[string]any) ([]byte, error) {
 	rid := fmt.Sprintf("req_%d", time.Now().UnixNano())
 	payload["rid"] = rid
 
@@ -159,7 +155,7 @@ func (c *Client) Request(ctx context.Context, payload map[string]any) ([]byte, e
 }
 
 // Connect establishes the connection and loops automatically with reconnect logic.
-func (c *Client) Connect(ctx context.Context) error {
+func (c *GatewayClient) Connect(ctx context.Context) error {
 	c.running = true
 	baseBackoff := 1 * time.Second
 
@@ -189,8 +185,7 @@ func (c *Client) Connect(ctx context.Context) error {
 				c.Handlers.OnError(fmt.Errorf("gateway error: %w", err))
 			}
 
-			// Fatal errors that should not reconnect
-			if errors.Is(err, protocol.ErrAuthRejected) || errors.Is(err, protocol.ErrRoomNotFound) {
+			if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrRoomNotFound) {
 				return err
 			}
 		}
@@ -199,7 +194,6 @@ func (c *Client) Connect(ctx context.Context) error {
 			break
 		}
 
-		// Exponential backoff with full jitter
 		jitter := time.Duration(rand.Int63n(int64(baseBackoff / 2)))
 		sleepDuration := baseBackoff + jitter
 		if sleepDuration > c.MaxReconnectDelay {
@@ -226,14 +220,14 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) changeStatus(s string) {
+func (c *GatewayClient) changeStatus(s string) {
 	if c.OnStatusChange != nil {
 		c.OnStatusChange(s)
 	}
 }
 
 // Close gracefully closes the gateway connection.
-func (c *Client) Close() {
+func (c *GatewayClient) Close() {
 	c.closeOnce.Do(func() {
 		c.running = false
 		close(c.stopChan)
@@ -246,7 +240,7 @@ func (c *Client) Close() {
 }
 
 // Send sends a raw payload to the gateway.
-func (c *Client) Send(payload any) error {
+func (c *GatewayClient) Send(payload any) error {
 	data, err := c.encoder.Encode(payload)
 	if err != nil {
 		return err
@@ -262,7 +256,7 @@ func (c *Client) Send(payload any) error {
 	}
 }
 
-func (c *Client) runSession(ctx context.Context) error {
+func (c *GatewayClient) runSession(ctx context.Context) error {
 	headers := make(http.Header)
 	headers.Set("room-id", c.RoomID)
 	headers.Set("api-token", c.Token)
@@ -277,7 +271,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	conn, resp, err := dialer.DialContext(ctx, c.GatewayURL, headers)
 	if err != nil {
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			return protocol.ErrAuthRejected
+			return ErrAuthRejected
 		}
 		return fmt.Errorf("failed to dial gateway: %w", err)
 	}
@@ -287,7 +281,6 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.mu.Unlock()
 	defer conn.Close()
 
-	// Initial handshake auth frame if required by server format
 	initPayload := map[string]any{
 		"_type":   "KeepaliveRequest",
 		"token":   c.Token,
@@ -309,8 +302,8 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 }
 
-func (c *Client) readPump(conn *websocket.Conn, errChan chan<- error) {
-	conn.SetReadLimit(protocol.MaxMessageSize)
+func (c *GatewayClient) readPump(conn *websocket.Conn, errChan chan<- error) {
+	conn.SetReadLimit(MaxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(c.PongWait))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(c.PongWait))
@@ -327,7 +320,7 @@ func (c *Client) readPump(conn *websocket.Conn, errChan chan<- error) {
 	}
 }
 
-func (c *Client) writePump(conn *websocket.Conn, errChan chan<- error) {
+func (c *GatewayClient) writePump(conn *websocket.Conn, errChan chan<- error) {
 	pingPeriod := (c.PongWait * 9) / 10
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
@@ -356,17 +349,7 @@ func (c *Client) writePump(conn *websocket.Conn, errChan chan<- error) {
 	}
 }
 
-// InboundEnvelope captures generic highrise event types.
-type InboundEnvelope struct {
-	Type   string          `json:"_type"`
-	RID    string          `json:"rid,omitempty"`
-	Event  string          `json:"event,omitempty"`
-	Data   json.RawMessage `json:"data,omitempty"`
-	RawMap map[string]any  `json:"-"`
-}
-
-func (c *Client) handleMessage(msg []byte) {
-	// Protocol decoder & validation
+func (c *GatewayClient) handleMessage(msg []byte) {
 	env, err := c.decoder.DecodeEnvelope(msg)
 	if err != nil {
 		if c.Handlers.OnError != nil {
@@ -375,7 +358,6 @@ func (c *Client) handleMessage(msg []byte) {
 		return
 	}
 
-	// Dispatch to pending request waiter if matching rid exists
 	if env.RID != "" {
 		c.pendingMu.Lock()
 		ch, exists := c.pending[env.RID]
@@ -386,12 +368,11 @@ func (c *Client) handleMessage(msg []byte) {
 		}
 	}
 
-	// Highrise event dispatching
 	switch env.Type {
 	case "SessionMetadata":
 		c.changeStatus("CONNECTED")
 		if c.Handlers.OnReady != nil {
-			var sm models.SessionMetadata
+			var sm SessionMetadata
 			if err := c.decoder.DecodeTyped(msg, &sm); err == nil {
 				c.Handlers.OnReady(&sm)
 			}
@@ -399,7 +380,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "ChatEvent":
 		if c.Handlers.OnChat != nil {
-			var ce models.ChatEvent
+			var ce ChatEvent
 			if err := c.decoder.DecodeTyped(msg, &ce); err == nil {
 				if ce.Whisper && c.Handlers.OnWhisper != nil {
 					c.Handlers.OnWhisper(&ce.User, ce.Message)
@@ -411,7 +392,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "UserJoinedEvent":
 		if c.Handlers.OnUserJoin != nil {
-			var je models.UserJoinedEvent
+			var je UserJoinedEvent
 			if err := c.decoder.DecodeTyped(msg, &je); err == nil {
 				c.Handlers.OnUserJoin(&je.User, je.Position)
 			}
@@ -419,7 +400,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "UserLeftEvent":
 		if c.Handlers.OnUserLeave != nil {
-			var le models.UserLeftEvent
+			var le UserLeftEvent
 			if err := c.decoder.DecodeTyped(msg, &le); err == nil {
 				c.Handlers.OnUserLeave(&le.User)
 			}
@@ -427,7 +408,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "UserMovedEvent":
 		if c.Handlers.OnUserMove != nil {
-			var me models.UserMovedEvent
+			var me UserMovedEvent
 			if err := c.decoder.DecodeTyped(msg, &me); err == nil {
 				c.Handlers.OnUserMove(&me.User, me.Position)
 			}
@@ -435,7 +416,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "EmoteEvent":
 		if c.Handlers.OnEmote != nil {
-			var ee models.EmoteEvent
+			var ee EmoteEvent
 			if err := c.decoder.DecodeTyped(msg, &ee); err == nil {
 				c.Handlers.OnEmote(&ee.User, ee.EmoteID, ee.Receiver)
 			}
@@ -443,7 +424,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "ReactionEvent":
 		if c.Handlers.OnReaction != nil {
-			var re models.ReactionEvent
+			var re ReactionEvent
 			if err := c.decoder.DecodeTyped(msg, &re); err == nil {
 				c.Handlers.OnReaction(&re.User, re.Reaction, &re.Receiver)
 			}
@@ -451,7 +432,7 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "TipReactionEvent":
 		if c.Handlers.OnTip != nil {
-			var te models.TipReactionEvent
+			var te TipReactionEvent
 			if err := c.decoder.DecodeTyped(msg, &te); err == nil {
 				c.Handlers.OnTip(&te.Sender, &te.Receiver, te.Item)
 			}
@@ -459,21 +440,20 @@ func (c *Client) handleMessage(msg []byte) {
 
 	case "MessageEvent":
 		if c.Handlers.OnMessage != nil {
-			var me models.MessageEvent
+			var me MessageEvent
 			if err := c.decoder.DecodeTyped(msg, &me); err == nil {
 				c.Handlers.OnMessage(me.UserID, me.ConversationID, me.IsNewConversation)
 			}
 		}
 
 	case "Error":
-		var ee protocol.ErrorPayload
+		var ee ErrorPayload
 		_ = c.decoder.DecodeTyped(msg, &ee)
 		if c.Handlers.OnError != nil {
 			c.Handlers.OnError(fmt.Errorf("server error: %s (code: %d)", ee.Message, ee.Code))
 		}
 
 	default:
-		// Safe fallback for novel / unknown events to prevent crashes
 		if c.Handlers.OnError != nil {
 			c.Handlers.OnError(fmt.Errorf("unhandled event type: %s", env.Type))
 		}

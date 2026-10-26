@@ -1,4 +1,4 @@
-package webapi
+package highrisebot
 
 import (
 	"context"
@@ -9,11 +9,9 @@ import (
 	"net/url"
 	"strconv"
 	"time"
-
-	"github.com/rezadesky/highrisebot/models"
 )
 
-const DefaultBaseURL = "https://webapi.highrise.game"
+const DefaultWebAPIBaseURL = "https://webapi.highrise.game"
 
 // PaginationOptions provides cursor parameters for webapi queries.
 type PaginationOptions struct {
@@ -22,18 +20,18 @@ type PaginationOptions struct {
 	Limit       int
 }
 
-// Client interacts with the Highrise REST Web API.
-type Client struct {
+// WebAPIClient interacts with the Highrise REST Web API.
+type WebAPIClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
 }
 
-// NewClient creates a new Highrise Web API REST client.
-func NewClient(baseURL string) *Client {
+// NewWebAPIClient creates a new Highrise Web API REST client.
+func NewWebAPIClient(baseURL string) *WebAPIClient {
 	if baseURL == "" {
-		baseURL = DefaultBaseURL
+		baseURL = DefaultWebAPIBaseURL
 	}
-	return &Client{
+	return &WebAPIClient{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
@@ -43,33 +41,33 @@ func NewClient(baseURL string) *Client {
 
 // UserProfile represents the detailed profile returned by the Web API.
 type UserProfile struct {
-	User        models.User `json:"user"`
-	Bio         string      `json:"bio,omitempty"`
-	JoinedAt    string      `json:"joined_at,omitempty"`
-	NumFollowers int        `json:"num_followers,omitempty"`
-	NumFollowing int        `json:"num_following,omitempty"`
+	User         User   `json:"user"`
+	Bio          string `json:"bio,omitempty"`
+	JoinedAt     string `json:"joined_at,omitempty"`
+	NumFollowers int    `json:"num_followers,omitempty"`
+	NumFollowing int    `json:"num_following,omitempty"`
 }
 
 // UsersResponse represents paginated response for users search.
 type UsersResponse struct {
-	Users []models.User `json:"users"`
-	Total int           `json:"total,omitempty"`
+	Users []User `json:"users"`
+	Total int    `json:"total,omitempty"`
 }
 
 // RoomsResponse represents paginated response for rooms list.
 type RoomsResponse struct {
-	Rooms []models.RoomInfo `json:"rooms"`
-	Total int               `json:"total,omitempty"`
+	Rooms []RoomInfo `json:"rooms"`
+	Total int        `json:"total,omitempty"`
 }
 
 // ItemsResponse represents list of items.
 type ItemsResponse struct {
-	Items []models.Item `json:"items"`
-	Total int           `json:"total,omitempty"`
+	Items []Item `json:"items"`
+	Total int    `json:"total,omitempty"`
 }
 
 // GetUser fetches a specific user profile by user ID.
-func (c *Client) GetUser(ctx context.Context, userID string) (*UserProfile, error) {
+func (c *WebAPIClient) GetUser(ctx context.Context, userID string) (*UserProfile, error) {
 	endpoint := fmt.Sprintf("%s/users/%s", c.BaseURL, url.PathEscape(userID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -95,7 +93,7 @@ func (c *Client) GetUser(ctx context.Context, userID string) (*UserProfile, erro
 }
 
 // SearchUsers queries users with optional username search and pagination.
-func (c *Client) SearchUsers(ctx context.Context, username string, opts *PaginationOptions) (*UsersResponse, error) {
+func (c *WebAPIClient) SearchUsers(ctx context.Context, username string, opts *PaginationOptions) (*UsersResponse, error) {
 	u, err := url.Parse(fmt.Sprintf("%s/users", c.BaseURL))
 	if err != nil {
 		return nil, err
@@ -132,7 +130,7 @@ func (c *Client) SearchUsers(ctx context.Context, username string, opts *Paginat
 }
 
 // GetRooms lists public rooms with pagination.
-func (c *Client) GetRooms(ctx context.Context, opts *PaginationOptions) (*RoomsResponse, error) {
+func (c *WebAPIClient) GetRooms(ctx context.Context, opts *PaginationOptions) (*RoomsResponse, error) {
 	u, err := url.Parse(fmt.Sprintf("%s/rooms", c.BaseURL))
 	if err != nil {
 		return nil, err
@@ -166,7 +164,7 @@ func (c *Client) GetRooms(ctx context.Context, opts *PaginationOptions) (*RoomsR
 }
 
 // GetItem retrieves item details by item ID.
-func (c *Client) GetItem(ctx context.Context, itemID string) (*models.Item, error) {
+func (c *WebAPIClient) GetItem(ctx context.Context, itemID string) (*Item, error) {
 	endpoint := fmt.Sprintf("%s/items/%s", c.BaseURL, url.PathEscape(itemID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -184,7 +182,7 @@ func (c *Client) GetItem(ctx context.Context, itemID string) (*models.Item, erro
 		return nil, fmt.Errorf("webapi: status %d: %s", res.StatusCode, string(body))
 	}
 
-	var item models.Item
+	var item Item
 	if err := json.NewDecoder(res.Body).Decode(&item); err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package scheduler
+package highrisebot
 
 import (
 	"context"
@@ -6,48 +6,47 @@ import (
 	"time"
 )
 
-// TaskFunc represents scheduled work.
-type TaskFunc func(ctx context.Context) error
+// ScheduledTaskFunc represents scheduled work.
+type ScheduledTaskFunc func(ctx context.Context) error
 
-// Task encapsulates a periodic scheduled job.
-type Task struct {
+// ScheduledTask encapsulates a periodic scheduled job.
+type ScheduledTask struct {
 	ID       string
 	Interval time.Duration
-	Action   TaskFunc
+	Action   ScheduledTaskFunc
 	cancel   context.CancelFunc
 }
 
-// Scheduler manages scheduled periodic background tasks.
-type Scheduler struct {
+// BotScheduler manages scheduled periodic background tasks.
+type BotScheduler struct {
 	mu    sync.RWMutex
-	tasks map[string]*Task
+	tasks map[string]*ScheduledTask
 	ctx   context.Context
 	stop  context.CancelFunc
 	wg    sync.WaitGroup
 }
 
-// NewScheduler creates a background task scheduler.
-func NewScheduler() *Scheduler {
+// NewBotScheduler creates a background task scheduler.
+func NewBotScheduler() *BotScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Scheduler{
-		tasks: make(map[string]*Task),
+	return &BotScheduler{
+		tasks: make(map[string]*ScheduledTask),
 		ctx:   ctx,
 		stop:  cancel,
 	}
 }
 
 // Every registers and starts a recurring task at fixed intervals.
-func (s *Scheduler) Every(id string, interval time.Duration, fn TaskFunc) {
+func (s *BotScheduler) Every(id string, interval time.Duration, fn ScheduledTaskFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Cancel existing if ID exists
 	if old, exists := s.tasks[id]; exists {
 		old.cancel()
 	}
 
 	taskCtx, taskCancel := context.WithCancel(s.ctx)
-	t := &Task{
+	t := &ScheduledTask{
 		ID:       id,
 		Interval: interval,
 		Action:   fn,
@@ -73,7 +72,7 @@ func (s *Scheduler) Every(id string, interval time.Duration, fn TaskFunc) {
 }
 
 // Cancel terminates a specific scheduled task.
-func (s *Scheduler) Cancel(id string) {
+func (s *BotScheduler) Cancel(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t, exists := s.tasks[id]; exists {
@@ -83,7 +82,7 @@ func (s *Scheduler) Cancel(id string) {
 }
 
 // Stop terminates all scheduled tasks.
-func (s *Scheduler) Stop() {
+func (s *BotScheduler) Stop() {
 	s.stop()
 	s.wg.Wait()
 }

@@ -1,4 +1,4 @@
-package command
+package highrisebot
 
 import (
 	"context"
@@ -6,14 +6,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rezadesky/highrisebot/models"
 )
 
-// Context encapsulates data provided to a command handler execution.
-type Context struct {
+// CommandContext encapsulates data provided to a command handler execution.
+type CommandContext struct {
 	Ctx       context.Context
-	User      models.User
+	User      User
 	Message   string
 	Command   string
 	Args      []string
@@ -23,15 +21,15 @@ type Context struct {
 }
 
 // Reply sends a response back to the user or room.
-func (c *Context) Reply(msg string) error {
+func (c *CommandContext) Reply(msg string) error {
 	if c.ReplyFunc != nil {
 		return c.ReplyFunc(msg)
 	}
 	return nil
 }
 
-// HandlerFunc is the signature for command actions.
-type HandlerFunc func(c *Context) error
+// CommandHandlerFunc is the signature for command actions.
+type CommandHandlerFunc func(c *CommandContext) error
 
 // Command represents a single command definition.
 type Command struct {
@@ -43,27 +41,27 @@ type Command struct {
 	MinArgs     int
 	Cooldown    time.Duration
 	Enabled     bool
-	Handler     HandlerFunc
+	Handler     CommandHandlerFunc
 	Subcommands map[string]*Command
 }
 
-// Registry manages command lookup, cooldowns, execution, and help generation.
-type Registry struct {
+// CommandRegistry manages command lookup, cooldowns, execution, and help generation.
+type CommandRegistry struct {
 	Prefix      string
 	mu          sync.RWMutex
 	commands    map[string]*Command
 	aliases     map[string]string
 	cooldowns   map[string]time.Time
 	cooldownMu  sync.Mutex
-	Middlewares []func(next HandlerFunc) HandlerFunc
+	Middlewares []func(next CommandHandlerFunc) CommandHandlerFunc
 }
 
-// NewRegistry creates a new Command Registry.
-func NewRegistry(prefix string) *Registry {
+// NewCommandRegistry creates a new Command Registry.
+func NewCommandRegistry(prefix string) *CommandRegistry {
 	if prefix == "" {
 		prefix = "!"
 	}
-	return &Registry{
+	return &CommandRegistry{
 		Prefix:    prefix,
 		commands:  make(map[string]*Command),
 		aliases:   make(map[string]string),
@@ -72,7 +70,7 @@ func NewRegistry(prefix string) *Registry {
 }
 
 // Register registers a command with optional subcommands.
-func (r *Registry) Register(cmd *Command) {
+func (r *CommandRegistry) Register(cmd *Command) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -86,7 +84,7 @@ func (r *Registry) Register(cmd *Command) {
 }
 
 // Execute parses a message string and invokes the matching command.
-func (r *Registry) Execute(ctx context.Context, user models.User, message string, whisper bool, replyFn func(msg string) error, botOwner string) (bool, error) {
+func (r *CommandRegistry) Execute(ctx context.Context, user User, message string, whisper bool, replyFn func(msg string) error, botOwner string) (bool, error) {
 	if !strings.HasPrefix(message, r.Prefix) {
 		return false, nil
 	}
@@ -112,19 +110,16 @@ func (r *Registry) Execute(ctx context.Context, user models.User, message string
 		return false, nil
 	}
 
-	// Owner check
 	if cmd.OwnerOnly && (botOwner == "" || user.ID != botOwner) {
 		_ = replyFn("⛔ You do not have permission to execute this command.")
 		return true, nil
 	}
 
-	// Min arguments validation
 	if len(args) < cmd.MinArgs {
 		_ = replyFn(fmt.Sprintf("⚠️ Usage: %s%s (requires at least %d args)", r.Prefix, cmd.Name, cmd.MinArgs))
 		return true, nil
 	}
 
-	// Cooldown check
 	if cmd.Cooldown > 0 {
 		key := fmt.Sprintf("%s:%s", user.ID, cmdName)
 		r.cooldownMu.Lock()
@@ -139,7 +134,7 @@ func (r *Registry) Execute(ctx context.Context, user models.User, message string
 		r.cooldownMu.Unlock()
 	}
 
-	cmdCtx := &Context{
+	cmdCtx := &CommandContext{
 		Ctx:       ctx,
 		User:      user,
 		Message:   message,
@@ -160,7 +155,7 @@ func (r *Registry) Execute(ctx context.Context, user models.User, message string
 }
 
 // Help generates an automatic formatted help text for all registered commands.
-func (r *Registry) Help() string {
+func (r *CommandRegistry) Help() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
