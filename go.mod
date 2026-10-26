@@ -1,4 +1,4 @@
-module github.com/rezadesky/highrisebot
+module github.com/rezadesky/highrise.bot.go
 
 go 1.21
 

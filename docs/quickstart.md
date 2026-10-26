@@ -12,7 +12,7 @@
 Add `highrisebot` to your Go module using:
 
 ```bash
-go get github.com/rezadesky/highrisebot
+go get github.com/rezadesky/highrise.bot.go
 ```
 
 ---

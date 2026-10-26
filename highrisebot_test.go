@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rezadesky/highrisebot"
+	highrisebot "github.com/rezadesky/highrise.bot.go"
 )
 
 func TestCoreClientCreationAndOptions(t *testing.T) {

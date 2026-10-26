@@ -33,7 +33,7 @@ Most Highrise bots are historically built using Python or Node.js. **`highrise.b
 Requires **Go 1.21** or later.
 
 ```bash
-go get github.com/rezadesky/highrisebot
+go get github.com/rezadesky/highrise.bot.go
 ```
 
 ---

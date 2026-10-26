@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rezadesky/highrisebot"
+	highrisebot "github.com/rezadesky/highrise.bot.go"
 )
 
 func main() {
