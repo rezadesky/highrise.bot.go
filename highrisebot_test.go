@@ -2,6 +2,7 @@ package highrisebot_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,49 +10,75 @@ import (
 	"github.com/rezadesky/highrisebot/models"
 )
 
-func TestNewBotInstance(t *testing.T) {
-	token := "dummy_token"
-	roomID := "dummy_room_id"
-
-	bot := highrisebot.New(token, roomID)
-	if bot == nil {
-		t.Fatal("expected bot instance to be created, got nil")
+func TestCoreClientCreationAndOptions(t *testing.T) {
+	// Test validation
+	invalidBot := highrisebot.New("", "")
+	err := invalidBot.Connect()
+	if !errors.Is(err, highrisebot.ErrMissingToken) {
+		t.Fatalf("expected ErrMissingToken, got %v", err)
 	}
 
-	if bot.Token != token {
-		t.Errorf("expected token %s, got %s", token, bot.Token)
+	invalidBot2 := highrisebot.New("token_ok", "")
+	err2 := invalidBot2.Connect()
+	if !errors.Is(err2, highrisebot.ErrMissingRoomID) {
+		t.Fatalf("expected ErrMissingRoomID, got %v", err2)
 	}
 
-	if bot.RoomID != roomID {
-		t.Errorf("expected roomID %s, got %s", roomID, bot.RoomID)
+	// Test functional options
+	bot := highrisebot.New(
+		"test_token",
+		"test_room",
+		highrisebot.WithGatewayURL("wss://custom.gateway.url"),
+		highrisebot.WithWebAPIURL("https://custom.api.url"),
+		highrisebot.WithHandshakeTimeout(5*time.Second),
+		highrisebot.WithMaxReconnectDelay(10*time.Second),
+		highrisebot.WithAutoReconnect(false),
+	)
+
+	if bot.Config.Token != "test_token" {
+		t.Errorf("expected token test_token, got %s", bot.Config.Token)
+	}
+	if bot.Config.GatewayURL != "wss://custom.gateway.url" {
+		t.Errorf("unexpected gateway URL: %s", bot.Config.GatewayURL)
+	}
+	if bot.Config.AutoReconnect != false {
+		t.Errorf("expected AutoReconnect to be false")
+	}
+
+	// Test Initial Status
+	if bot.Status() != highrisebot.StatusDisconnected {
+		t.Errorf("expected initial status DISCONNECTED, got %s", bot.Status())
 	}
 }
 
-func TestEventHandlersRegistration(t *testing.T) {
-	bot := highrisebot.New("dummy_token", "dummy_room")
+func TestLifecycleHooksAndGracefulShutdown(t *testing.T) {
+	bot := highrisebot.New(
+		"test_token",
+		"test_room",
+		highrisebot.WithAutoReconnect(false),
+	)
 
-	readyCalled := false
-	bot.OnReady(func(s *models.SessionMetadata) {
-		readyCalled = true
+	beforeStartTriggered := false
+	bot.BeforeStart(func(roomID string) {
+		beforeStartTriggered = true
 	})
 
-	chatCalled := false
-	bot.OnChat(func(u *models.User, msg string) {
-		chatCalled = true
-	})
+	bot.OnReady(func(s *models.SessionMetadata) {})
+	bot.OnDisconnect(func(err error) {})
 
-	// Verify that registering handlers does not panic and properties are set
-	if bot.Gateway == nil {
-		t.Fatal("expected gateway client initialized")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// Connect to non-existent endpoint should fail or timeout gracefully without panic
-	_ = bot.Start(ctx)
+	// Connect with cancellation context
+	_ = bot.Connect(ctx)
 
-	if readyCalled || chatCalled {
-		t.Log("handlers registered successfully")
+	if !beforeStartTriggered {
+		t.Errorf("expected BeforeStart hook to be triggered")
+	}
+
+	// Graceful disconnect test
+	bot.Disconnect()
+	if bot.Status() != highrisebot.StatusDisconnected {
+		t.Errorf("expected status to be DISCONNECTED after Disconnect(), got %s", bot.Status())
 	}
 }

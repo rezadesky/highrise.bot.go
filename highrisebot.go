@@ -3,6 +3,10 @@ package highrisebot
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 
 	"github.com/rezadesky/highrisebot/gateway"
 	"github.com/rezadesky/highrisebot/models"
@@ -11,6 +15,7 @@ import (
 
 // Bot represents the main Highrise Bot client.
 type Bot struct {
+	Config  Config
 	Token   string
 	RoomID  string
 	Gateway *gateway.Client
@@ -18,6 +23,8 @@ type Bot struct {
 
 	// Session data populated once connected
 	Session *models.SessionMetadata
+	status  ConnectionStatus
+	mu      sync.RWMutex
 
 	// Direct event callback registrations
 	beforeStart  func(roomID string)
@@ -25,44 +32,77 @@ type Bot struct {
 	onDisconnect func(error)
 	onChat       func(*models.User, string)
 	onWhisper    func(*models.User, string)
-	onUserJoin  func(*models.User, models.Position)
-	onUserLeave func(*models.User)
-	onUserMove  func(*models.User, models.Position)
-	onEmote     func(*models.User, string, *models.User)
-	onReaction  func(*models.User, string, *models.User)
-	onTip       func(*models.User, *models.User, models.Item)
-	onMessage   func(userID, conversationID string, isNew bool)
-	onError     func(error)
+	onUserJoin   func(*models.User, models.Position)
+	onUserLeave  func(*models.User)
+	onUserMove   func(*models.User, models.Position)
+	onEmote      func(*models.User, string, *models.User)
+	onReaction   func(*models.User, string, *models.User)
+	onTip        func(*models.User, *models.User, models.Item)
+	onMessage    func(userID, conversationID string, isNew bool)
+	onError      func(error)
 }
 
-// Config allows custom configuration options.
-type Config struct {
-	GatewayURL string
-	WebAPIURL  string
-}
+// New creates a new Highrise Bot instance with functional options.
+func New(token, roomID string, opts ...Option) *Bot {
+	cfg := DefaultConfig()
+	cfg.Token = token
+	cfg.RoomID = roomID
 
-// New creates a new Highrise Bot instance with default configurations.
-func New(token, roomID string, cfgs ...Config) *Bot {
-	var cfg Config
-	if len(cfgs) > 0 {
-		cfg = cfgs[0]
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
-	gw := gateway.NewClient(token, roomID, cfg.GatewayURL)
+	gwOpts := gateway.GatewayOptions{
+		GatewayURL:        cfg.GatewayURL,
+		HandshakeTimeout:  cfg.HandshakeTimeout,
+		WriteWait:         cfg.WriteWait,
+		PongWait:          cfg.PongWait,
+		MaxReconnectDelay: cfg.MaxReconnectDelay,
+		AutoReconnect:     cfg.AutoReconnect,
+	}
+
+	gw := gateway.NewClient(token, roomID, gwOpts)
 	api := webapi.NewClient(cfg.WebAPIURL)
 
 	bot := &Bot{
+		Config:  cfg,
 		Token:   token,
 		RoomID:  roomID,
 		Gateway: gw,
 		WebAPI:  api,
+		status:  StatusDisconnected,
+	}
+
+	gw.OnStatusChange = func(s string) {
+		bot.mu.Lock()
+		bot.status = ConnectionStatus(s)
+		bot.mu.Unlock()
 	}
 
 	return bot
 }
 
-// Start begins connecting to Highrise Gateway and blocks until context is cancelled or stopped.
-func (b *Bot) Start(ctx ...context.Context) error {
+// Status returns the current connection status of the bot.
+func (b *Bot) Status() ConnectionStatus {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.status
+}
+
+// Connect establishes the gateway connection with validation and context support.
+func (b *Bot) Connect(ctx ...context.Context) error {
+	if err := b.Config.Validate(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	if b.status == StatusConnected || b.status == StatusConnecting {
+		b.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	b.status = StatusConnecting
+	b.mu.Unlock()
+
 	var c context.Context
 	if len(ctx) > 0 {
 		c = ctx[0]
@@ -79,10 +119,17 @@ func (b *Bot) Start(ctx ...context.Context) error {
 				b.onReady(session)
 			}
 		},
-		OnDisconnect: b.onDisconnect,
-		OnChat:       b.onChat,
-		OnWhisper:    b.onWhisper,
-		OnUserJoin:   b.onUserJoin,
+		OnDisconnect: func(err error) {
+			b.mu.Lock()
+			b.Session = nil
+			b.mu.Unlock()
+			if b.onDisconnect != nil {
+				b.onDisconnect(err)
+			}
+		},
+		OnChat:      b.onChat,
+		OnWhisper:   b.onWhisper,
+		OnUserJoin:  b.onUserJoin,
 		OnUserLeave: b.onUserLeave,
 		OnUserMove:  b.onUserMove,
 		OnEmote:     b.onEmote,
@@ -95,9 +142,50 @@ func (b *Bot) Start(ctx ...context.Context) error {
 	return b.Gateway.Connect(c)
 }
 
-// Stop gracefully terminates the bot session.
-func (b *Bot) Stop() {
+// Start begins the bot connection lifecycle (alias for Connect).
+func (b *Bot) Start(ctx ...context.Context) error {
+	return b.Connect(ctx...)
+}
+
+// Run starts the bot and blocks until OS interrupt or context completion (graceful shutdown).
+func (b *Bot) Run(ctx ...context.Context) error {
+	var c context.Context
+	var cancel context.CancelFunc
+
+	if len(ctx) > 0 {
+		c, cancel = context.WithCancel(ctx[0])
+	} else {
+		c, cancel = context.WithCancel(context.Background())
+	}
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		select {
+		case <-sigChan:
+			b.Stop()
+			cancel()
+		case <-c.Done():
+		}
+	}()
+
+	return b.Connect(c)
+}
+
+// Disconnect closes the active connection gracefully.
+func (b *Bot) Disconnect() {
+	b.mu.Lock()
+	b.Session = nil
+	b.status = StatusDisconnected
+	b.mu.Unlock()
 	b.Gateway.Close()
+}
+
+// Stop gracefully terminates the bot session (alias for Disconnect).
+func (b *Bot) Stop() {
+	b.Disconnect()
 }
 
 // Event Listeners

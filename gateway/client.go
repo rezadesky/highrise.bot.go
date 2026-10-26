@@ -41,10 +41,15 @@ type HandlerFuncs struct {
 
 // Client manages the live WebSocket gateway connection to Highrise.
 type Client struct {
-	GatewayURL string
-	Token      string
-	RoomID     string
-	Handlers   HandlerFuncs
+	GatewayURL        string
+	Token             string
+	RoomID            string
+	HandshakeTimeout  time.Duration
+	WriteWait         time.Duration
+	PongWait          time.Duration
+	MaxReconnectDelay time.Duration
+	AutoReconnect     bool
+	Handlers          HandlerFuncs
 
 	conn      *websocket.Conn
 	mu        sync.Mutex
@@ -56,20 +61,63 @@ type Client struct {
 	// Request tracking for RPC responses (rid -> response channel)
 	pendingMu sync.Mutex
 	pending   map[string]chan []byte
+
+	// Status hook
+	OnStatusChange func(status string)
+}
+
+// GatewayOptions holds client parameters.
+type GatewayOptions struct {
+	GatewayURL        string
+	HandshakeTimeout  time.Duration
+	WriteWait         time.Duration
+	PongWait          time.Duration
+	MaxReconnectDelay time.Duration
+	AutoReconnect     bool
 }
 
 // NewClient initializes a new Gateway Client instance.
-func NewClient(token, roomID, gatewayURL string) *Client {
-	if gatewayURL == "" {
-		gatewayURL = DefaultGatewayURL
+func NewClient(token, roomID string, opts ...GatewayOptions) *Client {
+	opt := GatewayOptions{
+		GatewayURL:        DefaultGatewayURL,
+		HandshakeTimeout:  15 * time.Second,
+		WriteWait:         writeWait,
+		PongWait:          pongWait,
+		MaxReconnectDelay: maxReconnectDelay,
+		AutoReconnect:     true,
 	}
+	if len(opts) > 0 {
+		o := opts[0]
+		if o.GatewayURL != "" {
+			opt.GatewayURL = o.GatewayURL
+		}
+		if o.HandshakeTimeout > 0 {
+			opt.HandshakeTimeout = o.HandshakeTimeout
+		}
+		if o.WriteWait > 0 {
+			opt.WriteWait = o.WriteWait
+		}
+		if o.PongWait > 0 {
+			opt.PongWait = o.PongWait
+		}
+		if o.MaxReconnectDelay > 0 {
+			opt.MaxReconnectDelay = o.MaxReconnectDelay
+		}
+		opt.AutoReconnect = o.AutoReconnect
+	}
+
 	return &Client{
-		GatewayURL: gatewayURL,
-		Token:      token,
-		RoomID:     roomID,
-		writeChan:  make(chan []byte, 128),
-		stopChan:   make(chan struct{}),
-		pending:    make(map[string]chan []byte),
+		GatewayURL:        opt.GatewayURL,
+		Token:             token,
+		RoomID:            roomID,
+		HandshakeTimeout:  opt.HandshakeTimeout,
+		WriteWait:         opt.WriteWait,
+		PongWait:          opt.PongWait,
+		MaxReconnectDelay: opt.MaxReconnectDelay,
+		AutoReconnect:     opt.AutoReconnect,
+		writeChan:         make(chan []byte, 128),
+		stopChan:          make(chan struct{}),
+		pending:           make(map[string]chan []byte),
 	}
 }
 
@@ -116,14 +164,18 @@ func (c *Client) Connect(ctx context.Context) error {
 	for c.running {
 		select {
 		case <-ctx.Done():
+			c.changeStatus("DISCONNECTED")
 			return ctx.Err()
 		case <-c.stopChan:
+			c.changeStatus("STOPPED")
 			return nil
 		default:
 		}
 
+		c.changeStatus("CONNECTING")
 		err := c.runSession(ctx)
 		if err != nil {
+			c.changeStatus("DISCONNECTED")
 			if c.Handlers.OnDisconnect != nil {
 				c.Handlers.OnDisconnect(err)
 			}
@@ -132,25 +184,34 @@ func (c *Client) Connect(ctx context.Context) error {
 			}
 		}
 
-		if !c.running {
+		if !c.running || !c.AutoReconnect {
 			break
 		}
 
+		c.changeStatus("RECONNECTING")
 		log.Printf("[highrisebot] Reconnecting in %v...", backoff)
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
+			c.changeStatus("DISCONNECTED")
 			return ctx.Err()
 		case <-c.stopChan:
+			c.changeStatus("STOPPED")
 			return nil
 		}
 
 		backoff *= 2
-		if backoff > maxReconnectDelay {
-			backoff = maxReconnectDelay
+		if backoff > c.MaxReconnectDelay {
+			backoff = c.MaxReconnectDelay
 		}
 	}
 	return nil
+}
+
+func (c *Client) changeStatus(s string) {
+	if c.OnStatusChange != nil {
+		c.OnStatusChange(s)
+	}
 }
 
 // Close gracefully closes the gateway connection.
@@ -299,6 +360,7 @@ func (c *Client) handleMessage(msg []byte) {
 	// Highrise event dispatching
 	switch env.Type {
 	case "SessionMetadata":
+		c.changeStatus("CONNECTED")
 		if c.Handlers.OnReady != nil {
 			var sm models.SessionMetadata
 			if err := json.Unmarshal(msg, &sm); err == nil {
