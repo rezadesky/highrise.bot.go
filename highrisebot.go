@@ -26,6 +26,7 @@ type Bot struct {
 	onEmote     func(*models.User, string, *models.User)
 	onReaction  func(*models.User, string, *models.User)
 	onTip       func(*models.User, *models.User, models.Item)
+	onMessage   func(userID, conversationID string, isNew bool)
 	onError     func(error)
 }
 
@@ -75,6 +76,7 @@ func (b *Bot) Start(ctx ...context.Context) error {
 		OnEmote:     b.onEmote,
 		OnReaction:  b.onReaction,
 		OnTip:       b.onTip,
+		OnMessage:   b.onMessage,
 		OnError:     b.onError,
 	}
 
@@ -122,6 +124,10 @@ func (b *Bot) OnReaction(fn func(*models.User, string, *models.User)) {
 
 func (b *Bot) OnTip(fn func(sender *models.User, receiver *models.User, item models.Item)) {
 	b.onTip = fn
+}
+
+func (b *Bot) OnMessage(fn func(userID, conversationID string, isNew bool)) {
+	b.onMessage = fn
 }
 
 func (b *Bot) OnError(fn func(error)) {
@@ -336,6 +342,158 @@ func (b *Bot) SetOutfit(outfitItems []models.Item) error {
 	return b.Gateway.Send(payload)
 }
 
+// TipUser tips a user in the room with gold bars.
+// Valid bar denominations: "gold_bar_1", "gold_bar_5", "gold_bar_10", "gold_bar_50", "gold_bar_100", "gold_bar_500", "gold_bar_1k"
+func (b *Bot) TipUser(userID, barAmount string) error {
+	payload := map[string]any{
+		"_type":   "TipUserRequest",
+		"user_id": userID,
+		"bar":     barAmount,
+	}
+	return b.Gateway.Send(payload)
+}
+
+// BuyItem purchases an item using the bot's wallet.
+func (b *Bot) BuyItem(itemID string) error {
+	payload := map[string]any{
+		"_type":   "BuyItemRequest",
+		"item_id": itemID,
+	}
+	return b.Gateway.Send(payload)
+}
+
+// BuyVoiceTime buys voice chat time for the room using tokens or gold.
+// paymentType can be "bot_wallet_only", "bot_wallet_priority", or "user_wallet_only".
+func (b *Bot) BuyVoiceTime(paymentType string) error {
+	if paymentType == "" {
+		paymentType = "bot_wallet_only"
+	}
+	payload := map[string]any{
+		"_type":        "BuyVoiceTimeRequest",
+		"payment_type": paymentType,
+	}
+	return b.Gateway.Send(payload)
+}
+
+// GetVoiceStatus returns current room voice chat details.
+func (b *Bot) GetVoiceStatus(ctx ...context.Context) (*models.VoiceStatus, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type": "GetVoiceStatusRequest",
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		VoiceStatus models.VoiceStatus `json:"voice_status"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.VoiceStatus, nil
+}
+
+// AddUserToVoice invites/adds a user to room voice chat.
+func (b *Bot) AddUserToVoice(userID string) error {
+	payload := map[string]any{
+		"_type":   "AddUserToVoiceRequest",
+		"user_id": userID,
+	}
+	return b.Gateway.Send(payload)
+}
+
+// RemoveUserFromVoice removes a user from room voice chat.
+func (b *Bot) RemoveUserFromVoice(userID string) error {
+	payload := map[string]any{
+		"_type":   "RemoveUserFromVoiceRequest",
+		"user_id": userID,
+	}
+	return b.Gateway.Send(payload)
+}
+
+// SendDirectMessage sends a message in an inbox direct conversation.
+// msgType can be "text" or "invite" (if "invite", pass roomID).
+func (b *Bot) SendDirectMessage(conversationID, message, msgType string, roomID ...string) error {
+	if msgType == "" {
+		msgType = "text"
+	}
+	payload := map[string]any{
+		"_type":           "SendMessageRequest",
+		"conversation_id": conversationID,
+		"message":         message,
+		"type":            msgType,
+	}
+	if len(roomID) > 0 && roomID[0] != "" {
+		payload["room_id"] = roomID[0]
+	}
+	return b.Gateway.Send(payload)
+}
+
+// GetConversations retrieves recent direct message inbox threads.
+func (b *Bot) GetConversations(notJoined bool, lastID string, ctx ...context.Context) ([]models.Conversation, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type":      "GetConversationsRequest",
+		"not_joined": notJoined,
+	}
+	if lastID != "" {
+		payload["last_id"] = lastID
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Conversations []models.Conversation `json:"conversations"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Conversations, nil
+}
+
+// GetMessages retrieves messages from an inbox conversation.
+func (b *Bot) GetMessages(conversationID, lastID string, ctx ...context.Context) ([]models.DirectMessage, error) {
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	payload := map[string]any{
+		"_type":           "GetMessagesRequest",
+		"conversation_id": conversationID,
+	}
+	if lastID != "" {
+		payload["last_id"] = lastID
+	}
+
+	data, err := b.Gateway.Request(c, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Messages []models.DirectMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Messages, nil
+}
+
 // Export models directly as alias for convenience
 type (
 	User            = models.User
@@ -345,4 +503,7 @@ type (
 	SessionMetadata = models.SessionMetadata
 	Item            = models.Item
 	Currency        = models.Currency
+	VoiceStatus     = models.VoiceStatus
+	Conversation    = models.Conversation
+	DirectMessage   = models.DirectMessage
 )

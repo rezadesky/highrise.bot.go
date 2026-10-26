@@ -33,6 +33,7 @@ type HandlerFuncs struct {
 	OnEmote     func(*models.User, string, *models.User)
 	OnReaction  func(*models.User, string, *models.User)
 	OnTip       func(*models.User, *models.User, models.Item)
+	OnMessage   func(userID, conversationID string, isNew bool)
 	OnError     func(error)
 }
 
@@ -351,6 +352,14 @@ func (c *Client) handleMessage(msg []byte) {
 			var te models.TipReactionEvent
 			if err := json.Unmarshal(msg, &te); err == nil {
 				c.Handlers.OnTip(&te.Sender, &te.Receiver, te.Item)
+			}
+		}
+
+	case "MessageEvent":
+		if c.Handlers.OnMessage != nil {
+			var me models.MessageEvent
+			if err := json.Unmarshal(msg, &me); err == nil {
+				c.Handlers.OnMessage(me.UserID, me.ConversationID, me.IsNewConversation)
 			}
 		}
 

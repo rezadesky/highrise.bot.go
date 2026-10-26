@@ -58,6 +58,13 @@ type VoiceEvent struct {
 	Status string `json:"status"` // "speaking", "muted", etc.
 }
 
+// MessageEvent represents incoming direct inbox messages sent to the bot.
+type MessageEvent struct {
+	UserID            string `json:"user_id"`
+	ConversationID    string `json:"conversation_id"`
+	IsNewConversation bool   `json:"is_new_conversation"`
+}
+
 // ErrorEvent represents error payloads dispatched from Highrise servers.
 type ErrorEvent struct {
 	Message string `json:"message"`

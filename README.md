@@ -84,6 +84,7 @@ func main() {
 - `bot.OnEmote(func(user *highrisebot.User, emoteID string, receiver *highrisebot.User))`
 - `bot.OnReaction(func(user *highrisebot.User, reaction string, receiver *highrisebot.User))`
 - `bot.OnTip(func(sender *highrisebot.User, receiver *highrisebot.User, item highrisebot.Item))`
+- `bot.OnMessage(func(userID, conversationID string, isNew bool))`
 - `bot.OnError(func(err error))`
 
 ### Room Actions & Queries
@@ -96,10 +97,23 @@ func main() {
 - `bot.Kick(userID string)`
 - `bot.Mute(userID string, durationSeconds int)`
 - `bot.Ban(userID string, durationSeconds int)`
+- `bot.TipUser(userID, barAmount string)`
+- `bot.BuyItem(itemID string)`
 - `bot.GetRoomUsers(ctx ...context.Context) ([]highrisebot.UserPosition, error)`
 - `bot.GetWallet(ctx ...context.Context) ([]highrisebot.Currency, error)`
 - `bot.GetInventory(ctx ...context.Context) ([]highrisebot.Item, error)`
 - `bot.SetOutfit(outfitItems []highrisebot.Item) error`
+
+### Voice Chat Controls
+- `bot.GetVoiceStatus(ctx ...context.Context) (*highrisebot.VoiceStatus, error)`
+- `bot.AddUserToVoice(userID string) error`
+- `bot.RemoveUserFromVoice(userID string) error`
+- `bot.BuyVoiceTime(paymentType string) error`
+
+### Direct Messaging & Inbox
+- `bot.SendDirectMessage(conversationID, message, msgType string, roomID ...string) error`
+- `bot.GetConversations(notJoined bool, lastID string, ctx ...context.Context) ([]highrisebot.Conversation, error)`
+- `bot.GetMessages(conversationID, lastID string, ctx ...context.Context) ([]highrisebot.DirectMessage, error)`
 
 ### Web API Client (Public REST Data)
 ```go

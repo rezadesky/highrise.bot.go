@@ -61,6 +61,31 @@ type UserPosition struct {
 	Position Position `json:"position"`
 }
 
+// VoiceStatus represents the room voice chat state.
+type VoiceStatus struct {
+	Users         map[string]string `json:"users,omitempty"` // map user_id -> status ("speaking", etc)
+	SecondsLeft   float64           `json:"seconds_left,omitempty"`
+	AutoAutoRenew bool              `json:"auto_renew,omitempty"`
+}
+
+// Conversation represents an inbox direct message thread with the bot.
+type Conversation struct {
+	ID                 string   `json:"id"`
+	MemberIDs          []string `json:"member_ids"`
+	LastMessageSummary string   `json:"last_message_summary,omitempty"`
+	UnreadCount        int      `json:"unread_count,omitempty"`
+}
+
+// DirectMessage represents a single message in an inbox conversation.
+type DirectMessage struct {
+	ID             string `json:"id"`
+	ConversationID string `json:"conversation_id"`
+	SenderID       string `json:"sender_id"`
+	Message        string `json:"message"`
+	Type           string `json:"type,omitempty"` // "text" or "invite"
+	CreatedAt      string `json:"created_at,omitempty"`
+}
+
 // Currency represents in-game wallet currencies (Gold, Bubbles).
 type Currency struct {
 	Type   string `json:"type"`   // "gold" or "bubbles"
