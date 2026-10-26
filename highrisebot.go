@@ -8,6 +8,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/rezadesky/highrisebot/events"
 	"github.com/rezadesky/highrisebot/gateway"
 	"github.com/rezadesky/highrisebot/models"
 	"github.com/rezadesky/highrisebot/webapi"
@@ -15,11 +16,12 @@ import (
 
 // Bot represents the main Highrise Bot client.
 type Bot struct {
-	Config  Config
-	Token   string
-	RoomID  string
-	Gateway *gateway.Client
-	WebAPI  *webapi.Client
+	Config     Config
+	Token      string
+	RoomID     string
+	Gateway    *gateway.Client
+	WebAPI     *webapi.Client
+	Dispatcher *events.Dispatcher
 
 	// Session data populated once connected
 	Session *models.SessionMetadata
@@ -61,16 +63,18 @@ func New(token, roomID string, opts ...Option) *Bot {
 		AutoReconnect:     cfg.AutoReconnect,
 	}
 
+	disp := events.NewDispatcher()
 	gw := gateway.NewClient(token, roomID, gwOpts)
 	api := webapi.NewClient(cfg.WebAPIURL)
 
 	bot := &Bot{
-		Config:  cfg,
-		Token:   token,
-		RoomID:  roomID,
-		Gateway: gw,
-		WebAPI:  api,
-		status:  StatusDisconnected,
+		Config:     cfg,
+		Token:      token,
+		RoomID:     roomID,
+		Gateway:    gw,
+		WebAPI:     api,
+		Dispatcher: disp,
+		status:     StatusDisconnected,
 	}
 
 	gw.OnStatusChange = func(s string) {
@@ -115,6 +119,7 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 		BeforeStart: b.beforeStart,
 		OnReady: func(session *models.SessionMetadata) {
 			b.Session = session
+			b.Dispatcher.Publish(events.EventReady, session)
 			if b.onReady != nil {
 				b.onReady(session)
 			}
@@ -127,16 +132,69 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 				b.onDisconnect(err)
 			}
 		},
-		OnChat:      b.onChat,
-		OnWhisper:   b.onWhisper,
-		OnUserJoin:  b.onUserJoin,
-		OnUserLeave: b.onUserLeave,
-		OnUserMove:  b.onUserMove,
-		OnEmote:     b.onEmote,
-		OnReaction:  b.onReaction,
-		OnTip:       b.onTip,
-		OnMessage:   b.onMessage,
-		OnError:     b.onError,
+		OnChat: func(u *models.User, msg string) {
+			b.Dispatcher.Publish(events.EventChat, &models.ChatEvent{User: *u, Message: msg})
+			if b.onChat != nil {
+				b.onChat(u, msg)
+			}
+		},
+		OnWhisper: func(u *models.User, msg string) {
+			b.Dispatcher.Publish(events.EventWhisper, &models.WhisperEvent{User: *u, Message: msg})
+			if b.onWhisper != nil {
+				b.onWhisper(u, msg)
+			}
+		},
+		OnUserJoin: func(u *models.User, pos models.Position) {
+			b.Dispatcher.Publish(events.EventUserJoin, &models.UserJoinedEvent{User: *u, Position: pos})
+			if b.onUserJoin != nil {
+				b.onUserJoin(u, pos)
+			}
+		},
+		OnUserLeave: func(u *models.User) {
+			b.Dispatcher.Publish(events.EventUserLeave, &models.UserLeftEvent{User: *u})
+			if b.onUserLeave != nil {
+				b.onUserLeave(u)
+			}
+		},
+		OnUserMove: func(u *models.User, pos models.Position) {
+			b.Dispatcher.Publish(events.EventUserMove, &models.UserMovedEvent{User: *u, Position: pos})
+			if b.onUserMove != nil {
+				b.onUserMove(u, pos)
+			}
+		},
+		OnEmote: func(u *models.User, emoteID string, receiver *models.User) {
+			b.Dispatcher.Publish(events.EventEmote, &models.EmoteEvent{User: *u, EmoteID: emoteID, Receiver: receiver})
+			if b.onEmote != nil {
+				b.onEmote(u, emoteID, receiver)
+			}
+		},
+		OnReaction: func(u *models.User, reaction string, receiver *models.User) {
+			rec := models.User{}
+			if receiver != nil {
+				rec = *receiver
+			}
+			b.Dispatcher.Publish(events.EventReaction, &models.ReactionEvent{User: *u, Reaction: reaction, Receiver: rec})
+			if b.onReaction != nil {
+				b.onReaction(u, reaction, receiver)
+			}
+		},
+		OnTip: func(sender *models.User, receiver *models.User, item models.Item) {
+			rec := models.User{}
+			if receiver != nil {
+				rec = *receiver
+			}
+			b.Dispatcher.Publish(events.EventTip, &models.TipReactionEvent{Sender: *sender, Receiver: rec, Item: item})
+			if b.onTip != nil {
+				b.onTip(sender, receiver, item)
+			}
+		},
+		OnMessage: func(userID, conversationID string, isNew bool) {
+			b.Dispatcher.Publish(events.EventMessage, &models.MessageEvent{UserID: userID, ConversationID: conversationID, IsNewConversation: isNew})
+			if b.onMessage != nil {
+				b.onMessage(userID, conversationID, isNew)
+			}
+		},
+		OnError: b.onError,
 	}
 
 	return b.Gateway.Connect(c)
@@ -181,11 +239,32 @@ func (b *Bot) Disconnect() {
 	b.status = StatusDisconnected
 	b.mu.Unlock()
 	b.Gateway.Close()
+	b.Dispatcher.Close()
 }
 
 // Stop gracefully terminates the bot session (alias for Disconnect).
 func (b *Bot) Stop() {
 	b.Disconnect()
+}
+
+// AddMiddleware adds an interceptor middleware to the event pipeline.
+func (b *Bot) AddMiddleware(mw events.Middleware) {
+	b.Dispatcher.Use(mw)
+}
+
+// On registers a generic handler for any EventType with optional filter and returns an unregistration handle.
+func (b *Bot) On(evt events.EventType, fn events.HandlerFunc, filter ...events.FilterFunc) *events.HandlerRegistration {
+	return b.Dispatcher.Register(evt, fn, filter...)
+}
+
+// OnUnknown registers a fallback handler for novel or unhandled events.
+func (b *Bot) OnUnknown(fn func(rawType string, payload []byte)) {
+	b.Dispatcher.OnUnknown(fn)
+}
+
+// EventStats returns metrics of events received, dispatched, dropped, and errored.
+func (b *Bot) EventStats() events.Stats {
+	return b.Dispatcher.Stats()
 }
 
 // Event Listeners

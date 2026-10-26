@@ -471,5 +471,11 @@ func (c *Client) handleMessage(msg []byte) {
 		if c.Handlers.OnError != nil {
 			c.Handlers.OnError(fmt.Errorf("server error: %s (code: %d)", ee.Message, ee.Code))
 		}
+
+	default:
+		// Safe fallback for novel / unknown events to prevent crashes
+		if c.Handlers.OnError != nil {
+			c.Handlers.OnError(fmt.Errorf("unhandled event type: %s", env.Type))
+		}
 	}
 }
