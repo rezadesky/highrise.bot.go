@@ -2,15 +2,19 @@ package highrisebot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/rezadesky/highrisebot/chatqueue"
 	"github.com/rezadesky/highrisebot/events"
 	"github.com/rezadesky/highrisebot/gateway"
 	"github.com/rezadesky/highrisebot/models"
+	"github.com/rezadesky/highrisebot/roomstate"
 	"github.com/rezadesky/highrisebot/webapi"
 )
 
@@ -22,6 +26,8 @@ type Bot struct {
 	Gateway    *gateway.Client
 	WebAPI     *webapi.Client
 	Dispatcher *events.Dispatcher
+	RoomState  *roomstate.Tracker
+	chatQ      *chatqueue.Queue
 
 	// Session data populated once connected
 	Session *models.SessionMetadata
@@ -66,6 +72,7 @@ func New(token, roomID string, opts ...Option) *Bot {
 	disp := events.NewDispatcher()
 	gw := gateway.NewClient(token, roomID, gwOpts)
 	api := webapi.NewClient(cfg.WebAPIURL)
+	tracker := roomstate.NewTracker()
 
 	bot := &Bot{
 		Config:     cfg,
@@ -74,8 +81,17 @@ func New(token, roomID string, opts ...Option) *Bot {
 		Gateway:    gw,
 		WebAPI:     api,
 		Dispatcher: disp,
+		RoomState:  tracker,
 		status:     StatusDisconnected,
 	}
+
+	// Initialize rate-limited outgoing message queue (500ms delay)
+	bot.chatQ = chatqueue.NewQueue(500*time.Millisecond, func(m chatqueue.Message) error {
+		if m.Whisper {
+			return bot.rawWhisper(m.UserID, m.Content)
+		}
+		return bot.rawChat(m.Content)
+	})
 
 	gw.OnStatusChange = func(s string) {
 		bot.mu.Lock()
@@ -120,6 +136,12 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 		OnReady: func(session *models.SessionMetadata) {
 			b.Session = session
 			b.Dispatcher.Publish(events.EventReady, session)
+			// Auto fetch initial room users to sync state tracker
+			go func() {
+				if users, err := b.GetRoomUsers(); err == nil {
+					b.RoomState.SetUsers(users)
+				}
+			}()
 			if b.onReady != nil {
 				b.onReady(session)
 			}
@@ -145,18 +167,21 @@ func (b *Bot) Connect(ctx ...context.Context) error {
 			}
 		},
 		OnUserJoin: func(u *models.User, pos models.Position) {
+			b.RoomState.OnUserJoined(*u, pos)
 			b.Dispatcher.Publish(events.EventUserJoin, &models.UserJoinedEvent{User: *u, Position: pos})
 			if b.onUserJoin != nil {
 				b.onUserJoin(u, pos)
 			}
 		},
 		OnUserLeave: func(u *models.User) {
+			b.RoomState.OnUserLeft(u.ID)
 			b.Dispatcher.Publish(events.EventUserLeave, &models.UserLeftEvent{User: *u})
 			if b.onUserLeave != nil {
 				b.onUserLeave(u)
 			}
 		},
 		OnUserMove: func(u *models.User, pos models.Position) {
+			b.RoomState.OnUserMoved(u.ID, pos)
 			b.Dispatcher.Publish(events.EventUserMove, &models.UserMovedEvent{User: *u, Position: pos})
 			if b.onUserMove != nil {
 				b.onUserMove(u, pos)
@@ -238,6 +263,7 @@ func (b *Bot) Disconnect() {
 	b.Session = nil
 	b.status = StatusDisconnected
 	b.mu.Unlock()
+	b.chatQ.Close()
 	b.Gateway.Close()
 	b.Dispatcher.Close()
 }
@@ -336,8 +362,17 @@ func (b *Bot) IsConnected() bool {
 
 // Outgoing Bot Actions
 
-// Chat sends a public message in the room.
+// Chat sends a public message in the room via rate-limited queue with length validation.
 func (b *Bot) Chat(message string) error {
+	return b.chatQ.Enqueue(message, false, "")
+}
+
+// Whisper sends a private message to a specific user via rate-limited queue with validation.
+func (b *Bot) Whisper(userID, message string) error {
+	return b.chatQ.Enqueue(message, true, userID)
+}
+
+func (b *Bot) rawChat(message string) error {
 	payload := map[string]any{
 		"_type":   "ChatRequest",
 		"message": message,
@@ -345,8 +380,7 @@ func (b *Bot) Chat(message string) error {
 	return b.Gateway.Send(payload)
 }
 
-// Whisper sends a private message to a specific user.
-func (b *Bot) Whisper(userID, message string) error {
+func (b *Bot) rawWhisper(userID, message string) error {
 	payload := map[string]any{
 		"_type":   "ChatRequest",
 		"message": message,
@@ -356,10 +390,46 @@ func (b *Bot) Whisper(userID, message string) error {
 	return b.Gateway.Send(payload)
 }
 
-// Walk moves the bot avatar to a target coordinate in the room.
-func (b *Bot) Walk(x, y, z float64, facing ...string) error {
+// Sit anchors the avatar to a chair or seat entity in the room.
+func (b *Bot) Sit(entityID string, anchorIx int, facing ...string) error {
+	if entityID == "" {
+		return errors.New("sit: entityID is required")
+	}
 	face := "FrontRight"
-	if len(facing) > 0 {
+	if len(facing) > 0 && facing[0] != "" {
+		face = facing[0]
+	}
+	payload := map[string]any{
+		"_type": "MoveUserRequest",
+		"position": map[string]any{
+			"entity_id": entityID,
+			"anchor_ix": anchorIx,
+			"facing":    face,
+		},
+	}
+	return b.Gateway.Send(payload)
+}
+
+// Unban removes a room ban from a user.
+func (b *Bot) Unban(userID string) error {
+	if userID == "" {
+		return errors.New("unban: target userID is required")
+	}
+	payload := map[string]any{
+		"_type":   "ModerateRoomRequest",
+		"user_id": userID,
+		"action":  "unban",
+	}
+	return b.Gateway.Send(payload)
+}
+
+// Walk moves the bot avatar to a target coordinate in the room with coordinate validation.
+func (b *Bot) Walk(x, y, z float64, facing ...string) error {
+	if x < 0 || y < 0 || z < 0 {
+		return errors.New("walk: coordinates must be positive numbers")
+	}
+	face := "FrontRight"
+	if len(facing) > 0 && facing[0] != "" {
 		face = facing[0]
 	}
 	payload := map[string]any{
@@ -374,10 +444,16 @@ func (b *Bot) Walk(x, y, z float64, facing ...string) error {
 	return b.Gateway.Send(payload)
 }
 
-// Teleport moves a specific user (or bot itself) immediately to coordinates.
+// Teleport moves a specific user (or bot itself) immediately to coordinates with validation.
 func (b *Bot) Teleport(userID string, x, y, z float64, facing ...string) error {
+	if userID == "" {
+		return errors.New("teleport: target userID is required")
+	}
+	if x < 0 || y < 0 || z < 0 {
+		return errors.New("teleport: coordinates must be positive numbers")
+	}
 	face := "FrontRight"
-	if len(facing) > 0 {
+	if len(facing) > 0 && facing[0] != "" {
 		face = facing[0]
 	}
 	payload := map[string]any{
